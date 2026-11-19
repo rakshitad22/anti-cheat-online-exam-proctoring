@@ -16,6 +16,7 @@ import time
 import uuid
 from typing import List, Optional, Dict, Any
 from pathlib import Path
+from urllib.parse import unquote
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -125,7 +126,7 @@ def login(payload: LoginRequest):
     if not user:
         raise HTTPException(
             status_code=401,
-            detail="Invalid credentials. Verify your @skit.org.in email and password format."
+            detail="Contact administrator and create student credentials and then attempt to login. Without admin issuing credentials, no student can access the portal."
         )
     return {"status": "SUCCESS", "user": user}
 
@@ -171,12 +172,58 @@ def list_students():
     }
 
 
+@app.delete("/api/auth/students/{email:path}")
+def delete_student(email: str):
+    success = store.delete_student(email)
+    if not success:
+        raise HTTPException(status_code=404, detail="Student not found.")
+    return {"status": "DELETED", "email": email}
+
+
 # -----------------------------------------------------------------------------
 # 2. Departments & Test Catalog Endpoints
 # -----------------------------------------------------------------------------
 @app.get("/api/departments")
 def get_departments():
-    return {"departments": store.departments}
+    return {"departments": store.get_departments()}
+
+
+@app.post("/api/departments")
+def create_department(payload: Dict[str, str]):
+    dept_name = payload.get("name") or payload.get("department")
+    if not dept_name:
+        raise HTTPException(status_code=400, detail="Department name is required.")
+    try:
+        created = store.add_department(dept_name)
+        return {"status": "CREATED", "department": created, "departments": store.get_departments()}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+
+@app.put("/api/departments/{dept_name:path}")
+def update_department(dept_name: str, payload: Dict[str, str]):
+    clean_dept = unquote(dept_name).strip()
+    new_name = payload.get("name") or payload.get("new_name")
+    if not new_name:
+        raise HTTPException(status_code=400, detail="New department name is required.")
+    try:
+        updated = store.update_department(clean_dept, new_name)
+        return {"status": "UPDATED", "department": updated, "departments": store.get_departments()}
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+
+
+@app.delete("/api/departments/{dept_name:path}")
+def delete_department(dept_name: str):
+    clean_dept = unquote(dept_name).strip()
+    success = store.delete_department(clean_dept)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Department '{clean_dept}' not found.")
+    return {"status": "DELETED", "department": clean_dept, "departments": store.get_departments()}
+    success = store.delete_department(dept_name)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Department '{dept_name}' not found.")
+    return {"status": "DELETED", "department": dept_name, "departments": store.get_departments()}
 
 
 @app.get("/api/tests")
@@ -241,6 +288,28 @@ def push_notification(payload: PushNotificationRequest):
         priority=payload.priority or "HIGH"
     )
     return {"status": "PUSHED", "notification": notif}
+
+
+@app.put("/api/notifications/{notif_id}")
+def update_notification(notif_id: str, payload: PushNotificationRequest):
+    updated = store.update_notification(
+        notif_id=notif_id,
+        title=payload.title,
+        department=payload.department,
+        message=payload.message,
+        priority=payload.priority or "HIGH"
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"status": "UPDATED", "notification": updated}
+
+
+@app.delete("/api/notifications/{notif_id}")
+def delete_notification(notif_id: str):
+    success = store.delete_notification(notif_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"status": "DELETED", "notif_id": notif_id}
 
 
 # -----------------------------------------------------------------------------

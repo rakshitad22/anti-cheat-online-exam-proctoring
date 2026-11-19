@@ -187,24 +187,33 @@ export default function LockdownGuardian({
             return;
           }
           analyser.getByteFrequencyData(dataArray);
-          let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            sum += dataArray[i];
-          }
-          const avg = sum / dataArray.length;
-          setAudioLevel(Math.round(avg));
 
-          // Robust VAD: Filter out ambient room sounds. Require sustained loud human vocal energy (> 68 dB)
-          if (avg > 68) {
+          // Vocal Formant Bandpass Filter (350 Hz to 3400 Hz):
+          // With fftSize = 256 at standard 48kHz sampling, each bin is ~187.5 Hz.
+          // Bins 0-1 (0-375 Hz): Mechanical fan hum, AC rumble, ambient noise -> STRICTLY PERMITTED & IGNORED!
+          // Bins 2-18 (375-3400 Hz): Human vocal speech & loud commotion band.
+          let speechSum = 0;
+          let speechBins = 0;
+          for (let i = 2; i <= Math.min(18, dataArray.length - 1); i++) {
+            speechSum += dataArray[i];
+            speechBins++;
+          }
+          const speechAvg = speechBins > 0 ? speechSum / speechBins : 0;
+          setAudioLevel(Math.round(speechAvg));
+
+          // Strict Voice/Noise Gate:
+          // Low noises, desk taps, and continuous fan hum are allowed without warning.
+          // Only high-energy, sustained conversational voice or loud disturbances (> 78 dB vocal energy) trigger violation.
+          if (speechAvg > 78) {
             consecutiveLoudFrames.current += 1;
-            if (consecutiveLoudFrames.current >= 15) {
+            if (consecutiveLoudFrames.current >= 20) {
               setVoiceDetected(true);
               const now = Date.now();
               if (now - lastVoiceViolationTime.current > 8000) {
                 lastVoiceViolationTime.current = now;
                 triggerSecurityViolation(
                   'VOICE_DETECTED',
-                  'Audible human speech detected in examination room! Silent environment required.'
+                  'Audible human speech or severe background noise detected in examination room! Silent environment required.'
                 );
               }
             }

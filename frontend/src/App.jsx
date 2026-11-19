@@ -848,7 +848,7 @@ export default function App() {
           {/* FULL-SCREEN AI PROCTOR WARNING NOTIFICATION MODAL             */}
           {/* ------------------------------------------------------------- */}
           {activeFullScreenWarning && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-void/90 backdrop-blur-2xl animate-in fade-in duration-200">
+            <div className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-void/90 backdrop-blur-2xl animate-in fade-in duration-200">
               <div className="relative w-full max-w-lg rounded-3xl liquid-glass border-2 border-neon-rose/80 p-7 sm:p-8 shadow-neon-rose text-center overflow-hidden">
                 <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-neon-rose via-neon-orange to-neon-gold" />
                 
@@ -863,10 +863,18 @@ export default function App() {
                 <h3 className="text-lg sm:text-xl font-black text-white uppercase tracking-wider mb-2 font-mono">
                   {activeFullScreenWarning.code === 'MOBILE_PHONE_DETECTED'
                     ? '📱 Mobile Phone Detected'
-                    : (activeFullScreenWarning.code?.includes('BACKLIGHT') || activeFullScreenWarning.code?.includes('LIGHT'))
-                    ? '🪟 Window Backlight / Lighting Alert'
+                    : (activeFullScreenWarning.code?.includes('MULTIPLE_FACES') || activeFullScreenWarning.code?.includes('FACE_COUNT'))
+                    ? '👥 Multiple Persons Detected'
+                    : (activeFullScreenWarning.code?.includes('NO_FACE') || activeFullScreenWarning.code?.includes('OUT_OF_CAMERA'))
+                    ? '👤 Candidate Face Out of Camera View'
+                    : activeFullScreenWarning.code?.includes('LOOKING_AWAY')
+                    ? '👀 Candidate Looking Away from Screen'
                     : activeFullScreenWarning.code?.includes('NODDING')
                     ? '↕️ Head Nodding Detected'
+                    : (activeFullScreenWarning.code?.includes('VOICE') || activeFullScreenWarning.code?.includes('AUDIO'))
+                    ? '🎙️ Severe Speech / Noise Detected'
+                    : (activeFullScreenWarning.code?.includes('BACKLIGHT') || activeFullScreenWarning.code?.includes('LIGHT'))
+                    ? '🪟 Window Backlight / Lighting Alert'
                     : (activeFullScreenWarning.code?.includes('PARTIAL') || activeFullScreenWarning.code?.includes('HALF') || activeFullScreenWarning.code?.includes('PROCTOR_ZONE'))
                     ? '👤 Half Face / Out of Camera Region'
                     : '⚠️ Proctor Security Violation'}
@@ -897,6 +905,8 @@ export default function App() {
                   <span>
                     {activeFullScreenWarning.code === 'MOBILE_PHONE_DETECTED'
                       ? '📱 Phone Put Aside • Resume Fullscreen Exam'
+                      : activeFullScreenWarning.code?.includes('MULTIPLE_FACES')
+                      ? '👥 Solitary Session Confirmed • Resume Exam'
                       : 'Acknowledge & Resume Fullscreen Exam'}
                   </span>
                 </button>

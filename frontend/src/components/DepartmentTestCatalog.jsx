@@ -440,30 +440,52 @@ export default function DepartmentTestCatalog({
           </div>
 
           {/* Vibrant Department Filter Chips */}
-          <div className="flex items-center gap-3 overflow-x-auto pb-1 scrollbar-none">
+          <div className="flex items-center gap-2.5 overflow-x-auto pb-2 scrollbar-none">
             <button
               onClick={() => setSelectedDept('ALL')}
-              className={`px-5 py-2.5 rounded-full text-xs font-black whitespace-nowrap transition-all duration-200 border ${
+              className={`px-4 py-2.5 rounded-full text-xs font-black whitespace-nowrap transition-all duration-200 border flex items-center gap-2 ${
                 selectedDept === 'ALL'
                   ? 'bg-gradient-to-r from-neon-fuchsia to-neon-violet text-white border-white/40 shadow-liquid-glow-fuchsia scale-105'
-                  : 'liquid-pill text-slate-300 hover:text-white'
+                  : 'bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border-white/20 hover:border-white/40 shadow-sm'
               }`}
             >
-              All Departments ({tests.length})
+              <span>All Departments</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                selectedDept === 'ALL' ? 'bg-white/25 text-white' : 'bg-white/10 text-slate-300'
+              }`}>
+                {tests.length}
+              </span>
             </button>
-            {departments.map((dept) => (
-              <button
-                key={dept.id || dept.name}
-                onClick={() => setSelectedDept(dept.name)}
-                className={`px-5 py-2.5 rounded-full text-xs font-black whitespace-nowrap transition-all duration-200 border ${
-                  selectedDept === dept.name
-                    ? 'bg-gradient-to-r from-neon-cyan to-neon-teal text-void border-white/40 shadow-liquid-glow-cyan scale-105'
-                    : 'liquid-pill text-slate-300 hover:text-white'
-                }`}
-              >
-                {dept.name}
-              </button>
-            ))}
+            {departments.map((dept) => {
+              const deptName = typeof dept === 'string' ? dept : (dept?.name || dept?.title || String(dept));
+              const count = tests.filter((t) => t.department === deptName).length;
+              const isSelected = selectedDept === deptName;
+              const isUserDept = userDepartment && userDepartment === deptName;
+
+              return (
+                <button
+                  key={deptName}
+                  onClick={() => setSelectedDept(deptName)}
+                  className={`px-4 py-2.5 rounded-full text-xs font-black whitespace-nowrap transition-all duration-200 border flex items-center gap-2 ${
+                    isSelected
+                      ? 'bg-gradient-to-r from-neon-cyan to-blue-600 text-white border-white/40 shadow-liquid-glow-cyan scale-105'
+                      : 'bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border-white/20 hover:border-white/40 shadow-sm'
+                  }`}
+                >
+                  <span>{deptName}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                    isSelected ? 'bg-white/25 text-white' : 'bg-white/10 text-slate-300'
+                  }`}>
+                    {count}
+                  </span>
+                  {isUserDept && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-bold">
+                      My Dept
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* Curriculum Test Cards Grid */}

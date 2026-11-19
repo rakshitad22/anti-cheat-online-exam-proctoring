@@ -96,9 +96,14 @@ export default function LoginModal({ onLoginSuccess }) {
         onLoginSuccess(res.data.user);
       }
     } catch (err) {
-      setErrorMessage(
-        err.response?.data?.detail || 'Authentication failed. Please verify your credentials.'
-      );
+      const msg = err.response?.data?.detail || err.message;
+      if (roleMode === 'student' || cleanEmail !== 'admin@skit.org.in') {
+        setErrorMessage(
+          msg || 'Contact administrator and create student credentials and then attempt to login. Without admin issuing credentials, no student can access the portal.'
+        );
+      } else {
+        setErrorMessage(msg || 'Invalid administrator credentials. Please check your credentials.');
+      }
     } finally {
       setLoading(false);
     }

@@ -16,8 +16,13 @@ function initStorage() {
   if (!localStorage.getItem('proctor_local_tests')) {
     localStorage.setItem('proctor_local_tests', JSON.stringify(initialTests));
   }
-  if (!localStorage.getItem('proctor_local_students')) {
-    localStorage.setItem('proctor_local_students', JSON.stringify(initialStudents));
+  // All student credentials start cleanly empty: admin issues new credentials freshly
+  if (!localStorage.getItem('proctor_local_students_v2')) {
+    localStorage.setItem('proctor_local_students', JSON.stringify([]));
+    localStorage.setItem('proctor_local_students_v2', 'true');
+  }
+  if (!localStorage.getItem('proctor_local_departments')) {
+    localStorage.setItem('proctor_local_departments', JSON.stringify(DEPARTMENTS));
   }
   if (!localStorage.getItem('proctor_local_reports')) {
     localStorage.setItem('proctor_local_reports', JSON.stringify(initialReports));
@@ -321,7 +326,8 @@ function handleLocalApiCall(url, method, rawData) {
     }
 
     if (email === 'admin@skit.org.in') {
-      if (password.toLowerCase() === 'admin@123' || password === 'admin') {
+      const passClean = password.toLowerCase();
+      if (passClean === 'admin123' || passClean === 'admin@123' || passClean === 'admin') {
         return {
           status: 'SUCCESS',
           user: {
@@ -336,31 +342,50 @@ function handleLocalApiCall(url, method, rawData) {
       throw new Error('Invalid administrator credentials.');
     }
 
-    // Student Login
-    const namePart = email.split('@')[0].replace(/[^a-zA-Z]/g, '') || 'Candidate';
-    const formattedName = namePart.charAt(0).toUpperCase() + namePart.slice(1);
+    // Student Login: strictly search for candidate admitted by Admin
+    const raw = localStorage.getItem('proctor_local_students');
+    const students = raw ? JSON.parse(raw) : [];
+    const matched = students.find((s) => s.email.toLowerCase() === email || s.email.toLowerCase().split('@')[0] === email.split('@')[0]);
+
+    if (!matched) {
+      throw new Error('Contact administrator and create student credentials and then attempt to login. Without admin issuing credentials, no student can access the portal.');
+    }
+
+    if (matched.password && matched.password.trim() !== password) {
+      throw new Error('Contact administrator and create student credentials and then attempt to login. Without admin issuing credentials, no student can access the portal.');
+    }
 
     const user = {
-      id: `skit-${Date.now().toString(36)}`,
-      email: email,
-      name: formattedName,
+      id: matched.id,
+      email: matched.email,
+      name: matched.name,
       role: 'student',
-      department: 'Computer Science & Engineering (CSE)'
+      department: matched.department
     };
     return { status: 'SUCCESS', user };
   }
 
-  // 2. Auth: Students list
-  if (url.includes('/api/auth/students') && method === 'get') {
+  // 2. Auth: Students list & Delete
+  if (url.includes('/api/auth/students')) {
     const raw = localStorage.getItem('proctor_local_students');
-    const students = raw ? JSON.parse(raw) : initialStudents;
-    return { total: students.length, students };
+    let students = raw ? JSON.parse(raw) : [];
+
+    if (method === 'get') {
+      return { total: students.length, students };
+    }
+    if (method === 'delete') {
+      const match = url.match(/\/api\/auth\/students\/(.+)$/);
+      const targetEmail = match ? decodeURIComponent(match[1]).toLowerCase() : '';
+      students = students.filter((s) => s.email.toLowerCase() !== targetEmail);
+      localStorage.setItem('proctor_local_students', JSON.stringify(students));
+      return { status: 'DELETED', email: targetEmail, total: students.length };
+    }
   }
 
   // 3. Auth: Admit student
   if (url.includes('/api/auth/admit-student') && method === 'post') {
     const raw = localStorage.getItem('proctor_local_students');
-    const students = raw ? JSON.parse(raw) : initialStudents;
+    const students = raw ? JSON.parse(raw) : [];
     const newStudent = {
       id: `std-${Date.now().toString(36)}`,
       name: body.name || 'Candidate',
@@ -374,9 +399,41 @@ function handleLocalApiCall(url, method, rawData) {
     return { status: 'ADMITTED', student: newStudent };
   }
 
-  // 4. Departments
-  if (url.includes('/api/departments') && method === 'get') {
-    return { departments: DEPARTMENTS };
+  // 4. Departments (Full CRUD for Admin)
+  if (url.includes('/api/departments')) {
+    const raw = localStorage.getItem('proctor_local_departments');
+    let depts = raw ? JSON.parse(raw) : DEPARTMENTS;
+
+    if (method === 'get') {
+      return { departments: depts };
+    }
+    if (method === 'post') {
+      const newDept = (body.name || body.department || '').trim();
+      if (newDept && !depts.includes(newDept)) {
+        depts.push(newDept);
+        localStorage.setItem('proctor_local_departments', JSON.stringify(depts));
+      }
+      return { status: 'CREATED', department: newDept, departments: depts };
+    }
+    if (method === 'put') {
+      const match = url.match(/\/api\/departments\/(.+)$/);
+      const oldDept = match ? decodeURIComponent(match[1]) : '';
+      const newDept = (body.name || body.new_name || '').trim();
+      if (oldDept && newDept) {
+        depts = depts.map(d => d === oldDept ? newDept : d);
+        localStorage.setItem('proctor_local_departments', JSON.stringify(depts));
+      }
+      return { status: 'UPDATED', department: newDept, departments: depts };
+    }
+    if (method === 'delete') {
+      const match = url.match(/\/api\/departments\/(.+)$/);
+      const targetDept = match ? decodeURIComponent(match[1]) : '';
+      if (targetDept) {
+        depts = depts.filter(d => d !== targetDept);
+        localStorage.setItem('proctor_local_departments', JSON.stringify(depts));
+      }
+      return { status: 'DELETED', department: targetDept, departments: depts };
+    }
   }
 
   // 5. Tests
@@ -522,28 +579,41 @@ function handleLocalApiCall(url, method, rawData) {
     return { total: reports.length, reports };
   }
 
-  // 12. Notifications List
-  if (url.includes('/api/notifications') && method === 'get') {
+  // 12. Notifications List & Management (Full CRUD for Admin)
+  if (url.includes('/api/notifications')) {
     const raw = localStorage.getItem('proctor_local_notifications');
-    const notifications = raw ? JSON.parse(raw) : [];
-    return { notifications };
-  }
+    let notifications = raw ? JSON.parse(raw) : [];
 
-  // 13. Push Notification
-  if (url.includes('/api/notifications/push') && method === 'post') {
-    const raw = localStorage.getItem('proctor_local_notifications');
-    const notifications = raw ? JSON.parse(raw) : [];
-    const notif = {
-      id: `notif-${Date.now()}`,
-      title: body.title || 'Announcement',
-      department: body.department || 'ALL',
-      message: body.message || '',
-      priority: body.priority || 'HIGH',
-      timestamp: Date.now()
-    };
-    notifications.unshift(notif);
-    localStorage.setItem('proctor_local_notifications', JSON.stringify(notifications));
-    return { status: 'PUSHED', notification: notif };
+    if (method === 'get') {
+      return { notifications };
+    }
+    if (method === 'post') {
+      const notif = {
+        id: `notif-${Date.now()}`,
+        title: body.title || 'Announcement',
+        department: body.department || 'ALL',
+        message: body.message || '',
+        priority: body.priority || 'HIGH',
+        timestamp: Date.now()
+      };
+      notifications.unshift(notif);
+      localStorage.setItem('proctor_local_notifications', JSON.stringify(notifications));
+      return { status: 'PUSHED', notification: notif };
+    }
+    if (method === 'put') {
+      const match = url.match(/\/api\/notifications\/(.+)$/);
+      const targetId = match ? match[1] : '';
+      notifications = notifications.map(n => n.id === targetId ? { ...n, ...body } : n);
+      localStorage.setItem('proctor_local_notifications', JSON.stringify(notifications));
+      return { status: 'UPDATED', notifications };
+    }
+    if (method === 'delete') {
+      const match = url.match(/\/api\/notifications\/(.+)$/);
+      const targetId = match ? match[1] : '';
+      notifications = notifications.filter(n => n.id !== targetId);
+      localStorage.setItem('proctor_local_notifications', JSON.stringify(notifications));
+      return { status: 'DELETED', notif_id: targetId, notifications };
+    }
   }
 
   // 14. Database Overview

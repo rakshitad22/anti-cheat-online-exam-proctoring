@@ -27,59 +27,13 @@ DEPARTMENTS = [
 # Admin Master Credentials
 ADMIN_CREDENTIALS = {
     "email": "admin@skit.org.in",
-    "password": "admin@123",
+    "password": "admin123",
     "role": "admin",
     "name": "Head Proctor Administrator"
 }
 
-# Initial Student Roster (Strict password format: name@123)
-INITIAL_STUDENTS = [
-    {
-        "id": "std-1",
-        "email": "alex@skit.org.in",
-        "password": "alex@123",
-        "name": "Alex Morgan",
-        "department": "Computer Science & Engineering (CSE)",
-        "role": "student",
-        "created_at": time.time()
-    },
-    {
-        "id": "std-2",
-        "email": "priya@skit.org.in",
-        "password": "priya@123",
-        "name": "Priya Sharma",
-        "department": "Artificial Intelligence & Data Science (AI-DS)",
-        "role": "student",
-        "created_at": time.time()
-    },
-    {
-        "id": "std-3",
-        "email": "david@skit.org.in",
-        "password": "david@123",
-        "name": "David Chen",
-        "department": "Electronics & Communication (ECE)",
-        "role": "student",
-        "created_at": time.time()
-    },
-    {
-        "id": "std-4",
-        "email": "rakshitad@skit.org.in",
-        "password": "rakshitad@123",
-        "name": "Rakshita D",
-        "department": "Information Technology (IT)",
-        "role": "student",
-        "created_at": time.time()
-    },
-    {
-        "id": "std-5",
-        "email": "rakshita@skit.org.in",
-        "password": "rakshitad@123",
-        "name": "Rakshita D",
-        "department": "Information Technology (IT)",
-        "role": "student",
-        "created_at": time.time()
-    }
-]
+# Initial Student Roster (Empty by default: all student credentials issued freshly by Administrator)
+INITIAL_STUDENTS = []
 
 # Comprehensive Test Catalog (Department-Wise, with MCQ, Coding & AI Interview)
 INITIAL_TESTS = [
@@ -342,6 +296,13 @@ class StorageManager:
         except Exception as e:
             print(f"[WARN] Failed to load persisted tests: {e}")
 
+    def _save_persisted_tests(self):
+        try:
+            with open(TESTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.tests, f, indent=2)
+        except Exception as e:
+            print(f"[WARN] Failed to persist tests: {e}")
+
     def _load_persisted_students(self):
         try:
             if os.path.exists(STUDENTS_FILE):
@@ -392,6 +353,22 @@ class StorageManager:
 
         self._save_persisted_students()
         return student_record
+
+    def delete_student(self, email: str) -> bool:
+        email_clean = email.strip().lower()
+        found = False
+        if email_clean in self.students:
+            del self.students[email_clean]
+            found = True
+        # Also clean up any alias matching
+        to_del = [k for k, s in self.students.items() if s.get("email", "").lower() == email_clean or k == email_clean]
+        for k in to_del:
+            if k in self.students:
+                del self.students[k]
+                found = True
+        if found:
+            self._save_persisted_students()
+        return found
 
     def authenticate_user(self, email: str, password: str) -> Optional[Dict[str, Any]]:
         email_clean = email.strip().lower()
@@ -454,30 +431,46 @@ class StorageManager:
                         "department": student["department"]
                     }
 
-        # 3. Dynamic Candidate Admission: If valid @skit.org.in email and password format provided
-        if email_clean.endswith("@skit.org.in") and len(password_clean) >= 3:
-            name_part = email_clean.split("@")[0]
-            clean_name = re.sub(r'[\d._]', ' ', name_part).strip().title() or "Candidate"
-            new_student = {
-                "id": f"std-{len(self.students) + 1}",
-                "email": email_clean,
-                "password": password_clean,
-                "name": clean_name,
-                "department": "Computer Science & Engineering (CSE)",
-                "role": "student",
-                "created_at": time.time()
-            }
-            self.students[email_clean] = new_student
-            self._save_persisted_students()
-            return {
-                "id": new_student["id"],
-                "email": new_student["email"],
-                "name": new_student["name"],
-                "role": "student",
-                "department": new_student["department"]
-            }
-
+        # Strictly return None if student was not created by administrator
         return None
+
+    # --- Department CRUD for Admin ---
+    def get_departments(self) -> List[str]:
+        return list(self.departments)
+
+    def add_department(self, name: str) -> str:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Department name cannot be empty.")
+        if clean_name not in self.departments:
+            self.departments.append(clean_name)
+        return clean_name
+
+    def update_department(self, old_name: str, new_name: str) -> str:
+        old_clean = old_name.strip()
+        new_clean = new_name.strip()
+        if not new_clean:
+            raise ValueError("New department name cannot be empty.")
+        if old_clean in self.departments:
+            idx = self.departments.index(old_clean)
+            self.departments[idx] = new_clean
+            for t in self.tests.values():
+                if t.get("department") == old_clean:
+                    t["department"] = new_clean
+            for s in self.students.values():
+                if s.get("department") == old_clean:
+                    s["department"] = new_clean
+            self._save_persisted_tests()
+            self._save_persisted_students()
+            return new_clean
+        raise ValueError(f"Department '{old_name}' not found.")
+
+    def delete_department(self, name: str) -> bool:
+        clean_name = name.strip()
+        if clean_name in self.departments:
+            self.departments.remove(clean_name)
+            return True
+        return False
 
     # --- Test CRUD for Admin ---
     def get_tests(self, department: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -490,17 +483,20 @@ class StorageManager:
         test_id = f"test-{uuid.uuid4().hex[:8]}"
         test_data["id"] = test_id
         self.tests[test_id] = test_data
+        self._save_persisted_tests()
         return test_data
 
     def update_test(self, test_id: str, test_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if test_id in self.tests:
             self.tests[test_id].update(test_data)
+            self._save_persisted_tests()
             return self.tests[test_id]
         return None
 
     def delete_test(self, test_id: str) -> bool:
         if test_id in self.tests:
             del self.tests[test_id]
+            self._save_persisted_tests()
             return True
         return False
 
@@ -522,6 +518,21 @@ class StorageManager:
         if not department or department == "ALL" or department == "Administration":
             return self.notifications
         return [n for n in self.notifications if n["department"] in [department, "ALL"]]
+
+    def update_notification(self, notif_id: str, title: str, department: str, message: str, priority: str = "HIGH") -> Optional[Dict[str, Any]]:
+        for n in self.notifications:
+            if n["id"] == notif_id:
+                n["title"] = title
+                n["department"] = department
+                n["message"] = message
+                n["priority"] = priority
+                return n
+        return None
+
+    def delete_notification(self, notif_id: str) -> bool:
+        before = len(self.notifications)
+        self.notifications = [n for n in self.notifications if n["id"] != notif_id]
+        return len(self.notifications) < before
 
     # --- Candidate Randomized Test Generation (Unique per candidate) ---
     def generate_candidate_test(self, test_id: str, candidate_id: str) -> Optional[Dict[str, Any]]:

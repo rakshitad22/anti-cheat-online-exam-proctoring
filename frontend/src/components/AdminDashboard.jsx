@@ -69,12 +69,20 @@ export default function AdminDashboard({
   const [studentSearch, setStudentSearch] = useState('');
   const [showPasswordPreview, setShowPasswordPreview] = useState(false);
 
-  // Notification Push State
+  // Notification Management State
   const [notifTitle, setNotifTitle] = useState('');
   const [notifDept, setNotifDept] = useState('ALL');
   const [notifMessage, setNotifMessage] = useState('');
   const [notifPriority, setNotifPriority] = useState('HIGH');
   const [notifSuccess, setNotifSuccess] = useState('');
+  const [notificationsList, setNotificationsList] = useState([]);
+  const [editingNotifId, setEditingNotifId] = useState(null);
+
+  // Department Management State
+  const [newDeptName, setNewDeptName] = useState('');
+  const [editingDeptName, setEditingDeptName] = useState(null);
+  const [deptEditValue, setDeptEditValue] = useState('');
+  const [deptMessage, setDeptMessage] = useState({ text: '', type: '' });
 
   // Test Creation/Editing State
   const [showTestModal, setShowTestModal] = useState(false);
@@ -141,10 +149,20 @@ export default function AdminDashboard({
     }
   };
 
+  const fetchNotificationsList = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/api/notifications`);
+      setNotificationsList(res.data.notifications || []);
+    } catch (err) {
+      console.warn('Failed to load notifications list:', err);
+    }
+  };
+
   useEffect(() => {
     fetchLiveStatus();
     fetchStudents();
     fetchDatabaseOverview();
+    fetchNotificationsList();
     const interval = setInterval(fetchLiveStatus, 3500);
     return () => clearInterval(interval);
   }, []);
@@ -229,24 +247,118 @@ export default function AdminDashboard({
     }
   };
 
+  const handleDeleteStudent = async (studentEmail) => {
+    if (!window.confirm(`Are you sure you want to revoke credentials and delete student "${studentEmail}"?`)) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/api/auth/students/${encodeURIComponent(studentEmail)}`);
+      setAdmissionMessage({
+        text: `Student "${studentEmail}" credentials successfully revoked and removed.`,
+        type: 'success'
+      });
+      fetchStudents();
+      setTimeout(() => setAdmissionMessage({ text: '', type: '' }), 4000);
+    } catch (err) {
+      alert('Failed to delete student credentials.');
+    }
+  };
+
+  // Department CRUD Handlers
+  const handleAddDepartment = async (e) => {
+    e.preventDefault();
+    setDeptMessage({ text: '', type: '' });
+    const cleanName = newDeptName.trim();
+    if (!cleanName) return;
+
+    try {
+      await axios.post(`${API_BASE_URL}/api/departments`, { name: cleanName });
+      setDeptMessage({ text: `Department "${cleanName}" created successfully!`, type: 'success' });
+      setNewDeptName('');
+      if (onRefreshTests) onRefreshTests();
+      setTimeout(() => setDeptMessage({ text: '', type: '' }), 4000);
+    } catch (err) {
+      setDeptMessage({ text: err.response?.data?.detail || 'Failed to add department.', type: 'error' });
+    }
+  };
+
+  const handleUpdateDepartment = async (oldName) => {
+    const cleanNew = deptEditValue.trim();
+    if (!cleanNew || cleanNew === oldName) {
+      setEditingDeptName(null);
+      return;
+    }
+
+    try {
+      await axios.put(`${API_BASE_URL}/api/departments/${encodeURIComponent(oldName)}`, { new_name: cleanNew });
+      setDeptMessage({ text: `Department renamed to "${cleanNew}" successfully!`, type: 'success' });
+      setEditingDeptName(null);
+      if (onRefreshTests) onRefreshTests();
+      setTimeout(() => setDeptMessage({ text: '', type: '' }), 4000);
+    } catch (err) {
+      setDeptMessage({ text: err.response?.data?.detail || 'Failed to update department.', type: 'error' });
+    }
+  };
+
+  const handleDeleteDepartment = async (deptName) => {
+    if (!window.confirm(`Are you sure you want to delete the department "${deptName}"? This will unassign tests and students in this department.`)) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/api/departments/${encodeURIComponent(deptName)}`);
+      setDeptMessage({ text: `Department "${deptName}" deleted successfully.`, type: 'success' });
+      if (onRefreshTests) onRefreshTests();
+      setTimeout(() => setDeptMessage({ text: '', type: '' }), 4000);
+    } catch (err) {
+      setDeptMessage({ text: err.response?.data?.detail || 'Failed to delete department.', type: 'error' });
+    }
+  };
+
+  // Notification CRUD Handlers
   const handlePushNotification = async (e) => {
     e.preventDefault();
     setNotifSuccess('');
 
     try {
-      await axios.post(`${API_BASE_URL}/api/notifications`, {
-        department: notifDept,
-        title: notifTitle,
-        message: notifMessage,
-        priority: notifPriority
-      });
+      if (editingNotifId) {
+        await axios.put(`${API_BASE_URL}/api/notifications/${editingNotifId}`, {
+          department: notifDept,
+          title: notifTitle,
+          message: notifMessage,
+          priority: notifPriority
+        });
+        setNotifSuccess('Directive updated successfully!');
+        setEditingNotifId(null);
+      } else {
+        await axios.post(`${API_BASE_URL}/api/notifications`, {
+          department: notifDept,
+          title: notifTitle,
+          message: notifMessage,
+          priority: notifPriority
+        });
+        setNotifSuccess(`Notification dispatched to ${notifDept} department successfully!`);
+      }
 
-      setNotifSuccess(`Notification dispatched to ${notifDept} department successfully!`);
       setNotifTitle('');
       setNotifMessage('');
+      fetchNotificationsList();
       setTimeout(() => setNotifSuccess(''), 4000);
     } catch (err) {
       alert('Failed to dispatch notification broadcast.');
+    }
+  };
+
+  const handleEditNotification = (notif) => {
+    setEditingNotifId(notif.id);
+    setNotifTitle(notif.title);
+    setNotifDept(notif.department || 'ALL');
+    setNotifPriority(notif.priority || 'HIGH');
+    setNotifMessage(notif.message);
+  };
+
+  const handleDeleteNotification = async (notifId) => {
+    if (!window.confirm('Are you sure you want to delete this broadcast directive?')) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/api/notifications/${notifId}`);
+      fetchNotificationsList();
+    } catch (err) {
+      alert('Failed to delete broadcast directive.');
     }
   };
 
@@ -389,7 +501,7 @@ export default function AdminDashboard({
         </div>
 
         {/* Prominent Tab Switcher */}
-        <div className="relative z-10 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mt-7 pt-6 border-t border-white/15">
+        <div className="relative z-10 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mt-7 pt-6 border-t border-white/15">
           {[
             {
               id: 'results',
@@ -408,6 +520,30 @@ export default function AdminDashboard({
               activeGlow: 'bg-gradient-to-r from-neon-cyan/20 to-neon-teal/20 border-neon-cyan text-white shadow-neon-cyan'
             },
             {
+              id: 'departments',
+              label: 'Academic Departments Studio',
+              sub: `${departments.length} SKIT Departments`,
+              icon: Building2,
+              color: 'text-neon-cyan',
+              activeGlow: 'bg-gradient-to-r from-neon-cyan/20 to-blue-600/20 border-neon-cyan text-white shadow-neon-cyan'
+            },
+            {
+              id: 'tests',
+              label: 'Curriculum Tests Studio',
+              sub: `${tests.length} Department Curricula`,
+              icon: Layers,
+              color: 'text-neon-fuchsia',
+              activeGlow: 'bg-gradient-to-r from-neon-fuchsia/20 to-neon-pink/20 border-neon-fuchsia text-white shadow-neon-fuchsia'
+            },
+            {
+              id: 'broadcast',
+              label: 'Department Broadcast Alerts',
+              sub: `${notificationsList.length} Active Directives`,
+              icon: Bell,
+              color: 'text-neon-gold',
+              activeGlow: 'bg-gradient-to-r from-neon-amber/20 to-neon-orange/20 border-neon-amber text-white shadow-neon-amber'
+            },
+            {
               id: 'database',
               label: 'Backend & Database Inspector',
               sub: `${tests.length} Tests • 500 MCQs • Live DB`,
@@ -422,22 +558,6 @@ export default function AdminDashboard({
               icon: Activity,
               color: 'text-neon-mint',
               activeGlow: 'bg-gradient-to-r from-neon-emerald/20 to-neon-mint/20 border-neon-mint text-white shadow-neon-emerald'
-            },
-            {
-              id: 'tests',
-              label: 'Curriculum Tests Studio',
-              sub: `${tests.length} Department Curricula`,
-              icon: Layers,
-              color: 'text-neon-fuchsia',
-              activeGlow: 'bg-gradient-to-r from-neon-fuchsia/20 to-neon-pink/20 border-neon-fuchsia text-white shadow-neon-fuchsia'
-            },
-            {
-              id: 'broadcast',
-              label: 'Department Broadcast Alerts',
-              sub: 'Push Notifications',
-              icon: Bell,
-              color: 'text-neon-gold',
-              activeGlow: 'bg-gradient-to-r from-neon-amber/20 to-neon-orange/20 border-neon-amber text-white shadow-neon-amber'
             }
           ].map((tab) => {
             const Icon = tab.icon;
@@ -944,18 +1064,29 @@ export default function AdminDashboard({
                               {st.password || `${st.name.replace(/\s+/g, '').toLowerCase()}@123`}
                             </span>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveTab('database');
-                              setDbActiveSubTab('submissions');
-                              setSubmissionSearch(st.email);
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-neon-cyan/15 hover:bg-neon-cyan/25 border border-neon-cyan/30 text-neon-cyan text-[10px] font-mono font-bold flex items-center gap-1 transition"
-                          >
-                            <Eye className="w-3 h-3" />
-                            <span>View Submissions & Warnings</span>
-                          </button>
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTab('database');
+                                setDbActiveSubTab('submissions');
+                                setSubmissionSearch(st.email);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-neon-cyan/15 hover:bg-neon-cyan/25 border border-neon-cyan/30 text-neon-cyan text-[10px] font-mono font-bold flex items-center gap-1 transition"
+                            >
+                              <Eye className="w-3 h-3" />
+                              <span>Submissions</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteStudent(st.email)}
+                              className="px-2.5 py-1 rounded-lg bg-neon-rose/15 hover:bg-neon-rose/25 border border-neon-rose/30 text-neon-rose text-[10px] font-mono font-bold flex items-center gap-1 transition"
+                              title="Revoke credentials and remove candidate"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Revoke</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))
@@ -1153,101 +1284,349 @@ export default function AdminDashboard({
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* SECTION 4: DEPARTMENT DIRECTIVES BROADCAST                    */}
+      {/* SECTION 4: DEPARTMENT DIRECTIVES BROADCAST & MANAGEMENT       */}
       {/* ------------------------------------------------------------- */}
       {activeTab === 'broadcast' && (
-        <div className="p-8 sm:p-10 rounded-[2.5rem] liquid-glass border border-neon-amber/40 shadow-neon-amber max-w-2xl mx-auto backdrop-blur-3xl relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-48 h-48 bg-neon-amber/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="space-y-6 animate-in fade-in duration-300">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-7">
+            {/* Left: Dispatch / Edit Directive Form */}
+            <div className="lg:col-span-5 p-7 rounded-[2.5rem] liquid-glass border border-neon-amber/40 shadow-neon-amber backdrop-blur-3xl relative overflow-hidden flex flex-col justify-between">
+              <div className="absolute top-0 right-0 w-48 h-48 bg-neon-amber/15 rounded-full blur-3xl pointer-events-none" />
 
-          <div className="flex items-center gap-3 mb-2">
-            <span className="p-2.5 rounded-2xl bg-neon-amber/20 text-neon-gold border border-neon-amber/40 shadow-neon-amber">
-              <Bell className="w-5 h-5" />
-            </span>
-            <div>
-              <h3 className="text-lg font-black text-white">Broadcast Department Directive</h3>
-              <p className="text-[11px] font-mono text-neon-gold">Targeted Real-Time Announcements</p>
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="p-2.5 rounded-2xl bg-neon-amber/20 text-neon-gold border border-neon-amber/40 shadow-neon-amber">
+                    <Bell className="w-5 h-5" />
+                  </span>
+                  <div>
+                    <h3 className="text-lg font-black text-white">
+                      {editingNotifId ? 'Modify Directive' : 'Broadcast Directive'}
+                    </h3>
+                    <p className="text-[11px] font-mono text-neon-gold">Targeted Real-Time Announcements</p>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-300 mb-6">
+                  {editingNotifId
+                    ? 'Editing active directive broadcast. Update priority, target department, or body.'
+                    : 'Push real-time test announcements, mandatory attendance directives, and proctor instructions directly into candidate notification feeds.'}
+                </p>
+
+                {notifSuccess && (
+                  <div className="p-4 rounded-2xl mb-5 bg-neon-emerald/20 border border-neon-emerald/50 text-neon-mint text-xs flex items-center gap-2 font-mono shadow-neon-emerald">
+                    <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                    <span>{notifSuccess}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handlePushNotification} className="space-y-4 text-xs font-medium">
+                  <div>
+                    <label className="block text-slate-200 font-bold mb-1">Target Department</label>
+                    <select
+                      value={notifDept}
+                      onChange={(e) => setNotifDept(e.target.value)}
+                      style={{
+                        backgroundColor: '#0a0f1d',
+                        color: '#ffffff',
+                        border: '1px solid rgba(255, 255, 255, 0.25)'
+                      }}
+                      className="w-full px-4 py-3 rounded-2xl bg-slate-900 border border-white/20 text-white font-bold focus:outline-none focus:border-neon-gold cursor-pointer"
+                    >
+                      <option value="ALL" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>ALL DEPARTMENTS (Global Broadcast)</option>
+                      {departments.map((d) => (
+                        <option key={d} value={d} style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>{d}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-200 font-bold mb-1">Directive Title</label>
+                    <input
+                      type="text"
+                      required
+                      value={notifTitle}
+                      onChange={(e) => setNotifTitle(e.target.value)}
+                      placeholder="e.g. Mandatory CSE AI Examination Scheduled Today"
+                      className="w-full px-4 py-3 rounded-2xl liquid-glass-subtle border border-white/20 text-white placeholder:text-slate-500 focus:outline-none focus:border-neon-gold font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-200 font-bold mb-1">Priority Level</label>
+                    <select
+                      value={notifPriority}
+                      onChange={(e) => setNotifPriority(e.target.value)}
+                      style={{
+                        backgroundColor: '#0a0f1d',
+                        color: '#ffffff',
+                        border: '1px solid rgba(255, 255, 255, 0.25)'
+                      }}
+                      className="w-full px-4 py-3 rounded-2xl bg-slate-900 border border-white/20 text-white focus:outline-none focus:border-neon-gold cursor-pointer font-mono font-bold"
+                    >
+                      <option value="HIGH" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>HIGH PRIORITY</option>
+                      <option value="URGENT" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>URGENT MANDATORY</option>
+                      <option value="NORMAL" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>NORMAL INFORMATION</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-200 font-bold mb-1">Announcement Body</label>
+                    <textarea
+                      rows={3}
+                      required
+                      value={notifMessage}
+                      onChange={(e) => setNotifMessage(e.target.value)}
+                      placeholder="Provide instructions, mandatory attendance times, or proctor guidelines..."
+                      className="w-full p-4 rounded-2xl liquid-glass-subtle border border-white/20 text-white placeholder:text-slate-500 focus:outline-none focus:border-neon-gold custom-scrollbar"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-neon-amber via-neon-orange to-neon-rose hover:opacity-95 active:scale-95 text-void font-black text-xs transition flex items-center justify-center gap-2 shadow-neon-amber uppercase tracking-wider font-mono"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>{editingNotifId ? 'Save Directive Changes' : 'Dispatch Directive Now'}</span>
+                    </button>
+                    {editingNotifId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingNotifId(null);
+                          setNotifTitle('');
+                          setNotifMessage('');
+                        }}
+                        className="px-4 py-3.5 rounded-2xl bg-white/10 hover:bg-white/20 text-slate-300 text-xs font-mono font-bold"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            {/* Right: Active Broadcast Directives Roster (Full CRUD) */}
+            <div className="lg:col-span-7 p-7 rounded-[2.5rem] liquid-glass border border-white/10 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between pb-4 border-b border-white/10 mb-4">
+                  <div>
+                    <h3 className="text-base font-black text-white flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-neon-amber" />
+                      <span>Active Broadcast Directives</span>
+                    </h3>
+                    <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+                      Directives live in student notification center feeds
+                    </p>
+                  </div>
+                  <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-white/[0.05] border border-white/10 text-neon-gold">
+                    {notificationsList.length} Directives Active
+                  </span>
+                </div>
+
+                <div className="space-y-3 max-h-[460px] overflow-y-auto custom-scrollbar pr-1">
+                  {notificationsList.length === 0 ? (
+                    <div className="p-12 text-center text-slate-400 font-mono text-xs">
+                      No broadcast directives dispatched yet. Use the form on the left to push announcements.
+                    </div>
+                  ) : (
+                    notificationsList.map((notif) => (
+                      <div
+                        key={notif.id}
+                        className="p-4 rounded-2xl liquid-glass-subtle border border-white/10 hover:border-neon-amber/40 transition-all space-y-2 group"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-white text-xs sm:text-sm font-mono group-hover:text-neon-gold transition-colors">
+                                {notif.title}
+                              </span>
+                              <span className={`text-[9px] font-mono uppercase px-2 py-0.5 rounded font-bold border ${
+                                notif.priority === 'URGENT'
+                                  ? 'bg-neon-rose/25 text-neon-rose border-neon-rose/40'
+                                  : notif.priority === 'HIGH'
+                                  ? 'bg-neon-amber/25 text-neon-gold border-neon-amber/40'
+                                  : 'bg-white/10 text-slate-300 border-white/20'
+                              }`}>
+                                {notif.priority || 'NORMAL'}
+                              </span>
+                            </div>
+                            <div className="text-[10px] font-mono text-slate-400 mt-1 flex items-center gap-2">
+                              <span className="text-neon-cyan font-bold">{notif.department === 'ALL' ? 'Global Broadcast' : notif.department}</span>
+                              <span>•</span>
+                              <span>{notif.time_display || new Date(notif.timestamp || Date.now()).toLocaleTimeString()}</span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleEditNotification(notif)}
+                              className="p-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-neon-cyan text-xs font-mono transition"
+                              title="Edit directive"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteNotification(notif.id)}
+                              className="p-2 rounded-xl bg-neon-rose/15 hover:bg-neon-rose/30 text-neon-rose text-xs font-mono transition"
+                              title="Delete directive"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-300 leading-relaxed font-sans bg-black/30 p-2.5 rounded-xl border border-white/5">
+                          {notif.message}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="pt-4 mt-4 border-t border-white/10 text-[11px] font-mono text-slate-400 flex items-center justify-between">
+                <span>Directives are view-only for student accounts</span>
+                <span className="text-neon-mint font-bold">● Active Dispatch</span>
+              </div>
             </div>
           </div>
-          <p className="text-xs text-slate-300 mb-6">
-            Push real-time test announcements, mandatory attendance directives, and proctor instructions directly into candidate notification feeds.
-          </p>
+        </div>
+      )}
 
-          {notifSuccess && (
-            <div className="p-4 rounded-2xl mb-5 bg-neon-emerald/20 border border-neon-emerald/50 text-neon-mint text-xs flex items-center gap-2 font-mono shadow-neon-emerald">
-              <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-              <span>{notifSuccess}</span>
+      {/* ------------------------------------------------------------- */}
+      {/* SECTION 4B: ACADEMIC DEPARTMENTS STUDIO (CREATE, EDIT, DELETE)*/}
+      {/* ------------------------------------------------------------- */}
+      {activeTab === 'departments' && (
+        <div className="space-y-6 animate-in fade-in duration-300">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-6 rounded-3xl liquid-glass border border-white/10">
+            <div>
+              <h3 className="text-xl font-black text-white flex items-center gap-2">
+                <Building2 className="w-6 h-6 text-neon-cyan" />
+                <span>SKIT Academic Departments Management</span>
+              </h3>
+              <p className="text-xs text-slate-300 font-mono mt-1">
+                Create, customize, and maintain academic engineering departments and curriculum assignments.
+              </p>
+            </div>
+            <div className="px-4 py-2 rounded-2xl liquid-glass border border-neon-cyan/40 text-xs font-mono text-neon-cyan font-bold">
+              {departments.length} Active Departments
+            </div>
+          </div>
+
+          {deptMessage.text && (
+            <div className={`p-4 rounded-2xl text-xs font-mono flex items-center gap-2 border ${
+              deptMessage.type === 'error'
+                ? 'bg-neon-rose/20 text-neon-rose border-neon-rose/40'
+                : 'bg-neon-emerald/20 text-neon-mint border-neon-emerald/40'
+            }`}>
+              {deptMessage.type === 'error' ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+              <span>{deptMessage.text}</span>
             </div>
           )}
 
-          <form onSubmit={handlePushNotification} className="space-y-4 text-xs font-medium">
-            <div>
-              <label className="block text-slate-200 font-bold mb-1">Target Department</label>
-              <select
-                value={notifDept}
-                onChange={(e) => setNotifDept(e.target.value)}
-                style={{
-                  backgroundColor: '#0a0f1d',
-                  color: '#ffffff',
-                  border: '1px solid rgba(255, 255, 255, 0.25)'
-                }}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-900 border border-white/20 text-white font-bold focus:outline-none focus:border-neon-gold cursor-pointer"
-              >
-                <option value="ALL" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>ALL DEPARTMENTS (Global Broadcast)</option>
-                {departments.map((d) => (
-                  <option key={d} value={d} style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>{d}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-slate-200 font-bold mb-1">Directive Title</label>
+          {/* Add New Department Card */}
+          <div className="p-6 rounded-3xl liquid-glass border border-white/10">
+            <h4 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+              <PlusCircle className="w-4 h-4 text-neon-cyan" />
+              <span>Add New Academic Department</span>
+            </h4>
+            <form onSubmit={handleAddDepartment} className="flex flex-col sm:flex-row gap-3">
               <input
                 type="text"
                 required
-                value={notifTitle}
-                onChange={(e) => setNotifTitle(e.target.value)}
-                placeholder="e.g. Mandatory CSE AI Examination Scheduled Today"
-                className="w-full px-4 py-3 rounded-2xl liquid-glass-subtle border border-white/20 text-white placeholder:text-slate-500 focus:outline-none focus:border-neon-gold font-mono"
+                value={newDeptName}
+                onChange={(e) => setNewDeptName(e.target.value)}
+                placeholder="e.g. Mechanical Engineering (ME) or Robotics & AI (RAI)"
+                className="flex-1 px-4 py-3 rounded-2xl liquid-glass-subtle border border-white/20 text-white placeholder:text-slate-500 text-xs focus:outline-none focus:border-neon-cyan font-mono"
               />
-            </div>
-
-            <div>
-              <label className="block text-slate-200 font-bold mb-1">Priority Level</label>
-              <select
-                value={notifPriority}
-                onChange={(e) => setNotifPriority(e.target.value)}
-                style={{
-                  backgroundColor: '#0a0f1d',
-                  color: '#ffffff',
-                  border: '1px solid rgba(255, 255, 255, 0.25)'
-                }}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-900 border border-white/20 text-white focus:outline-none focus:border-neon-gold cursor-pointer font-mono font-bold"
+              <button
+                type="submit"
+                className="px-6 py-3 rounded-2xl bg-gradient-to-r from-neon-cyan to-blue-600 hover:opacity-95 text-white font-black text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition active:scale-95 shadow-neon-cyan"
               >
-                <option value="HIGH" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>HIGH PRIORITY</option>
-                <option value="URGENT" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>URGENT MANDATORY</option>
-                <option value="NORMAL" style={{ backgroundColor: '#0a0f1d', color: '#ffffff' }}>NORMAL INFORMATION</option>
-              </select>
-            </div>
+                <PlusCircle className="w-4 h-4" /> Add Department
+              </button>
+            </form>
+          </div>
 
-            <div>
-              <label className="block text-slate-200 font-bold mb-1">Announcement Body</label>
-              <textarea
-                rows={3}
-                required
-                value={notifMessage}
-                onChange={(e) => setNotifMessage(e.target.value)}
-                placeholder="Provide instructions, mandatory attendance times, or proctor guidelines..."
-                className="w-full p-4 rounded-2xl liquid-glass-subtle border border-white/20 text-white placeholder:text-slate-500 focus:outline-none focus:border-neon-gold custom-scrollbar"
-              />
-            </div>
+          {/* Existing Departments Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {departments.map((dept) => {
+              const count = tests.filter((t) => t.department === dept).length;
+              const isEditing = editingDeptName === dept;
 
-            <button
-              type="submit"
-              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-neon-amber via-neon-orange to-neon-rose hover:opacity-95 active:scale-95 text-void font-black text-xs transition flex items-center justify-center gap-2 shadow-neon-amber uppercase tracking-wider font-mono mt-4"
-            >
-              <Send className="w-4 h-4" /> Dispatch Directive Now
-            </button>
-          </form>
+              return (
+                <div
+                  key={dept}
+                  className="p-5 rounded-3xl liquid-glass border border-white/10 hover:border-white/25 transition flex flex-col justify-between gap-4"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="p-3 rounded-2xl bg-white/[0.04] text-neon-cyan border border-white/10">
+                      <Building2 className="w-5 h-5" />
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-white/[0.06] text-slate-300 border border-white/10">
+                      {count} Tests Assigned
+                    </span>
+                  </div>
+
+                  <div>
+                    {isEditing ? (
+                      <div className="space-y-2">
+                        <input
+                          type="text"
+                          value={deptEditValue}
+                          onChange={(e) => setDeptEditValue(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl liquid-glass-subtle border border-neon-cyan text-white text-xs font-mono"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateDepartment(dept)}
+                            className="px-3 py-1 rounded-lg bg-neon-cyan text-void text-[11px] font-bold"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingDeptName(null)}
+                            className="px-3 py-1 rounded-lg bg-white/10 text-slate-300 text-[11px]"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <h4 className="text-sm font-black text-white font-mono leading-snug">
+                        {dept}
+                      </h4>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-white/10 text-xs font-mono">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingDeptName(dept);
+                        setDeptEditValue(dept);
+                      }}
+                      className="text-neon-cyan hover:underline flex items-center gap-1 font-bold"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" /> Edit Name
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDepartment(dept)}
+                      className="text-neon-rose hover:underline flex items-center gap-1 font-bold"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
