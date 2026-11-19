@@ -242,10 +242,14 @@ export default function App() {
         if (data.status) setStatus(data.status);
         if (data.incidents) setIncidents(data.incidents);
         if (data.warnings_count) {
-          setWarningsCount(data.warnings_count);
-          const total = data.warnings_count.total !== undefined ? Number(data.warnings_count.total) : 0;
-          if (total >= 5 && !isSubmittingRef.current) {
-            handleSubmitExam(data.warnings_count);
+          const rawTotal = Number(data.warnings_count.total || 0);
+          const clampedCount = {
+            ...data.warnings_count,
+            total: Math.min(5, rawTotal)
+          };
+          setWarningsCount(clampedCount);
+          if (clampedCount.total >= 5 && !isSubmittingRef.current) {
+            handleSubmitExam(clampedCount);
           }
         }
       } catch (err) {
@@ -329,10 +333,14 @@ export default function App() {
         });
       }
       if (data.warnings_count) {
-        setWarningsCount(data.warnings_count);
-        const total = data.warnings_count.total !== undefined ? Number(data.warnings_count.total) : 0;
-        if (total >= 5 && !isSubmittingRef.current) {
-          handleSubmitExam(data.warnings_count);
+        const rawTotal = Number(data.warnings_count.total || 0);
+        const clampedCount = {
+          ...data.warnings_count,
+          total: Math.min(5, rawTotal)
+        };
+        setWarningsCount(clampedCount);
+        if (clampedCount.total >= 5 && !isSubmittingRef.current) {
+          handleSubmitExam(clampedCount);
         }
       }
     } catch (err) {
@@ -346,11 +354,16 @@ export default function App() {
 
     try {
       const finalWarnings = overrideWarnings || warningsCount;
-      const totalWarns = finalWarnings.total !== undefined
+      const rawTotal = finalWarnings.total !== undefined
         ? Number(finalWarnings.total)
         : Object.values(finalWarnings).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+      const totalWarns = Math.min(5, rawTotal);
       const isTerminated = totalWarns >= 5;
       const finalTrust = isTerminated ? Math.min(trustScore, 25) : trustScore;
+      const cleanWarnings = {
+        ...finalWarnings,
+        total: totalWarns
+      };
 
       const payload = {
         test_id: activeTest.id,
@@ -363,7 +376,7 @@ export default function App() {
           coding: codingAnswers
         },
         trust_score: finalTrust,
-        warnings_count: finalWarnings,
+        warnings_count: cleanWarnings,
         incidents: incidents,
         interview_transcript: interviewTranscript
       };

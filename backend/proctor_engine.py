@@ -91,6 +91,8 @@ class ProctorEngine:
 
         self.last_multi_face_penalty_time: float = 0.0
         self.last_mobile_penalty_time: float = 0.0
+        self.last_tab_penalty_time: float = 0.0
+        self.last_voice_penalty_time: float = 0.0
         self.last_lighting_penalty_time: float = 0.0
         self.last_boundary_penalty_time: float = 0.0
         self.last_nodding_penalty_time: float = 0.0
@@ -99,9 +101,13 @@ class ProctorEngine:
         # Head nodding temporal tracking: rolling list of (timestamp, pitch)
         self.pitch_history: List[Tuple[float, float]] = []
 
-        # Mobile phone detection temporal persistence (triggers immediately upon phone detection)
+        # Mobile phone detection: requires candidate present + hand proximity + 2 consecutive frames
         self.phone_consecutive_frames: int = 0
-        self.phone_confirm_threshold: int = 1
+        self.phone_confirm_threshold: int = 2
+
+        # Multiple persons detection: requires 3 consecutive frames of 2+ faces to prevent single-frame flicker
+        self.multi_face_consecutive_frames: int = 0
+        self.multi_face_confirm_threshold: int = 3
 
         # Evidence snapshot directory
         if evidence_dir is None:
@@ -111,12 +117,15 @@ class ProctorEngine:
             self.evidence_dir = Path(evidence_dir)
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize Haar Cascade face detector as dependable offline computer vision baseline
+        # Initialize Haar Cascade face detectors as dependable computer vision ensemble
         try:
             haar_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
             self.haar_face = cv2.CascadeClassifier(haar_path)
+            alt2_path = cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml"
+            self.haar_face_alt2 = cv2.CascadeClassifier(alt2_path)
         except Exception:
             self.haar_face = None
+            self.haar_face_alt2 = None
 
         # Initialize MediaPipe Face Mesh detector
         if MEDIAPIPE_AVAILABLE and mp_face_mesh:
@@ -505,26 +514,45 @@ class ProctorEngine:
                     min_y, max_y = int(min(ys)), int(max(ys))
                     face_boxes.append((min_x, min_y, max_x - min_x, max_y - min_y))
 
-        # Secondary: High-accuracy Haar Cascade offline detector when MediaPipe has 0 detections or is unavailable
-        if face_count == 0 and self.haar_face and not self.haar_face.empty():
+        # Secondary: High-accuracy Haar Cascade ensemble detector
+        if self.haar_face and not self.haar_face.empty():
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            detected_faces = self.haar_face.detectMultiScale(
+            detected_faces = list(self.haar_face.detectMultiScale(
                 gray_frame,
                 scaleFactor=1.1,
                 minNeighbors=3,
                 minSize=(28, 28)
-            )
+            ))
+            # Also check alt2 cascade for secondary / profile faces
+            if hasattr(self, 'haar_face_alt2') and self.haar_face_alt2 and not self.haar_face_alt2.empty():
+                alt_faces = self.haar_face_alt2.detectMultiScale(
+                    gray_frame,
+                    scaleFactor=1.08,
+                    minNeighbors=2,
+                    minSize=(30, 30)
+                )
+                for (ax, ay, aw, ah) in alt_faces:
+                    # Only add if not overlapping with existing detection
+                    is_dup = False
+                    for (dx, dy, dw, dh) in detected_faces:
+                        if abs(ax - dx) < (dw * 0.6) and abs(ay - dy) < (dh * 0.6):
+                            is_dup = True
+                            break
+                    if not is_dup:
+                        detected_faces.append((ax, ay, aw, ah))
+
             if len(detected_faces) > 0:
-                face_count = len(detected_faces)
-                for (fx, fy, fw, fh) in detected_faces:
-                    face_boxes.append((fx, fy, fw, fh))
-                if face_count == 1:
-                    fx, fy, fw, fh = detected_faces[0]
-                    fcx = fx + (fw / 2.0)
-                    fcy = fy + (fh / 2.0)
-                    yaw_deg = round(((fcx - (w / 2.0)) / (w / 2.0)) * 40.0, 1)
-                    pitch_deg = round(((fcy - (h * 0.42)) / (h * 0.42)) * 30.0, 1)
-                    head_pose = {"pitch": pitch_deg, "yaw": yaw_deg, "roll": 0.0}
+                # Use cascade result if MediaPipe gave 0 or cascade detected multiple
+                if face_count == 0 or len(detected_faces) > face_count:
+                    face_count = len(detected_faces)
+                    face_boxes = [(fx, fy, fw, fh) for (fx, fy, fw, fh) in detected_faces]
+                    if face_count == 1:
+                        fx, fy, fw, fh = detected_faces[0]
+                        fcx = fx + (fw / 2.0)
+                        fcy = fy + (fh / 2.0)
+                        yaw_deg = round(((fcx - (w / 2.0)) / (w / 2.0)) * 40.0, 1)
+                        pitch_deg = round(((fcy - (h * 0.42)) / (h * 0.42)) * 30.0, 1)
+                        head_pose = {"pitch": pitch_deg, "yaw": yaw_deg, "roll": 0.0}
 
         # ---------------------------------------------------------------------
         # 1. Presence Rule: No Face Detected (-5 pts per second)
@@ -563,21 +591,29 @@ class ProctorEngine:
             self.no_face_start_time = None
 
         # ---------------------------------------------------------------------
-        # 2. Presence Rule: Multiple Faces Detected (-15 pts per incident)
+        # 2. Presence Rule: Multiple Faces Detected (Requires 3 consecutive frames, 1 warning max for session)
         # ---------------------------------------------------------------------
         if face_count > 1:
-            # Cooldown of 2.0s between penalty applications to avoid continuous frame drain
-            if (timestamp - self.last_multi_face_penalty_time) >= 2.0:
+            self.multi_face_consecutive_frames += 1
+        else:
+            self.multi_face_consecutive_frames = 0
+
+        # Require 3 consecutive confirmed frames of 2+ faces to prevent single-frame flicker false alarms
+        if self.multi_face_consecutive_frames >= self.multi_face_confirm_threshold:
+            msg = f"Multiple individuals detected in camera view ({face_count} faces visible)."
+            infraction_item = {
+                "code": "MULTIPLE_FACES_DETECTED",
+                "severity": "CRITICAL",
+                "message": msg
+            }
+            infractions.append(infraction_item)
+
+            # Strict session rule: 1 warning total for multiple persons across the entire session
+            if self.warnings_count["multiple_faces"] < 1:
                 self.trust_score = max(0.0, self.trust_score - 15.0)
                 self.last_multi_face_penalty_time = timestamp
-
-                msg = f"Multiple individuals detected in camera view ({face_count} faces)."
-                infraction_item = {
-                    "code": "MULTIPLE_FACES_DETECTED",
-                    "severity": "CRITICAL",
-                    "message": msg
-                }
-                infractions.append(infraction_item)
+                self.warnings_count["multiple_faces"] = 1
+                self.warnings_count["total"] = min(5, self.warnings_count["total"] + 1)
 
                 evidence = self.capture_evidence_snapshot(
                     frame, "MULTIPLE_FACES_DETECTED", "CRITICAL", msg, head_pose, face_count, timestamp
@@ -705,17 +741,17 @@ class ProctorEngine:
                 )
 
         # ---------------------------------------------------------------------
-        # 7. Mobile Phone & Handheld Device Detection (-20 pts)
+        # 7. Mobile Phone & Handheld Device Detection (Hand proximity required, max 2 warnings for session)
         # ---------------------------------------------------------------------
-        raw_phone_seen = self.detect_mobile_phone_heuristic(frame, face_boxes=face_boxes)
+        raw_phone_seen = self.detect_mobile_phone_heuristic(frame, face_boxes=face_boxes, candidate_present=(face_count >= 1))
         if raw_phone_seen:
             self.phone_consecutive_frames += 1
         else:
             self.phone_consecutive_frames = max(0, self.phone_consecutive_frames - 1)
 
-        # Require 2 consecutive confirmed frames for rapid detection
+        # Require 2 consecutive confirmed frames of handheld phone
         if self.phone_consecutive_frames >= self.phone_confirm_threshold:
-            msg = "Mobile phone detected! Please keep your phone aside and maintain exam integrity."
+            msg = "Mobile phone detected in hand! Please keep your phone aside and maintain exam integrity."
             infraction_item = {
                 "code": "MOBILE_PHONE_DETECTED",
                 "severity": "CRITICAL",
@@ -723,11 +759,12 @@ class ProctorEngine:
             }
             infractions.append(infraction_item)
 
-            if (timestamp - self.last_mobile_penalty_time) >= 3.0:
+            # Strict session rule: max 2 total mobile warnings across session, with 20s cooldown lock
+            if (timestamp - self.last_mobile_penalty_time) >= 20.0 and self.warnings_count["mobile_phone"] < 2:
                 self.trust_score = max(0.0, self.trust_score - 20.0)
                 self.last_mobile_penalty_time = timestamp
-                self.warnings_count["total"] += 1
                 self.warnings_count["mobile_phone"] += 1
+                self.warnings_count["total"] = min(5, self.warnings_count["total"] + 1)
 
                 evidence = self.capture_evidence_snapshot(
                     frame, "MOBILE_PHONE_DETECTED", "CRITICAL", msg, head_pose, face_count, timestamp
@@ -793,14 +830,32 @@ class ProctorEngine:
         if len(self.incidents) > 100:
             self.incidents.pop()
 
-    def detect_mobile_phone_heuristic(self, frame: np.ndarray, face_boxes=None) -> bool:
+    def detect_mobile_phone_heuristic(self, frame: np.ndarray, face_boxes=None, candidate_present: bool = True) -> bool:
         """
         High-accuracy precision computer vision detector for handheld smartphones and mobile devices.
         Detects genuine handheld rectangular phone bodies while strictly ignoring background room walls,
-        doors, posters, shadows, and clothing folds.
+        doors, posters, shadows, books, monitors, and empty rooms.
+
+        Requires:
+        1. Candidate present in webcam view.
+        2. Rectangular body matching modern smartphone form factor (aspect ratio 1.20 - 3.0, area 1200 - 75000 px).
+        3. Hand / finger skin contact / overlap (skin_in_border + skin_inside >= 35 pixels).
+        4. Excludes eyeglasses and background ceiling fixtures.
         """
         try:
+            # If no candidate is present in camera view, ignore background room objects
+            if not candidate_present:
+                return False
+
             h, w, _ = frame.shape
+
+            # Segment human skin tones using both YCrCb and HSV color spaces
+            ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            skin_ycrcb = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 175, 127]))
+            skin_hsv = cv2.inRange(hsv, np.array([0, 28, 40]), np.array([28, 210, 255]))
+            skin_mask = cv2.bitwise_or(skin_ycrcb, skin_hsv)
+
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
@@ -813,10 +868,10 @@ class ProctorEngine:
 
                 for cnt in cnts:
                     area = cv2.contourArea(cnt)
-                    # True smartphone dimensions in standard webcam feed: 2,000 to 80,000 px
-                    if not (2000 <= area <= 80000):
+                    # True smartphone dimensions in standard webcam feed: 1,200 to 75,000 px
+                    if not (1200 <= area <= 75000):
                         continue
-                    if (area / float(w * h)) > 0.40:
+                    if (area / float(w * h)) > 0.45:
                         continue
 
                     perimeter = cv2.arcLength(cnt, True)
@@ -827,23 +882,18 @@ class ProctorEngine:
                     rw, rh = rect[1]
                     long_side = max(rw, rh)
                     short_side = min(rw, rh)
-                    if long_side < 45 or short_side < 20:
+                    if long_side < 35 or short_side < 16:
                         continue
 
                     aspect_ratio = long_side / short_side
-                    # Handheld smartphone aspect ratio (portrait 16:9 ~ 1.77, 20:9 ~ 2.22, angled/foreshortened 1.22 to 2.85)
-                    if not (1.22 <= aspect_ratio <= 2.85):
+                    # Handheld smartphone aspect ratio (portrait 16:9 ~ 1.77, 20:9 ~ 2.22, angled/foreshortened 1.20 to 3.0)
+                    if not (1.20 <= aspect_ratio <= 3.0):
                         continue
 
                     # Rectangular solidity: allows candidate fingers and hand holding the device edges
                     rect_area = rw * rh
                     solidity = area / rect_area if rect_area > 0 else 0
-                    if solidity < 0.58:
-                        continue
-
-                    # Polygon approximation: 4-sided rectangular polygon (4-8 vertices with fingers/rounded corners)
-                    approx = cv2.approxPolyDP(cnt, 0.04 * perimeter, True)
-                    if not (4 <= len(approx) <= 8):
+                    if solidity < 0.52:
                         continue
 
                     # Bounding center
@@ -853,18 +903,32 @@ class ProctorEngine:
                         continue
 
                     # Disregard small eyeglasses frames on detected candidate face
-                    is_eye_glasses = False
                     if face_boxes:
+                        is_eye_glasses = False
                         for (fx, fy, fw, fh) in face_boxes:
                             if fx <= cx <= (fx + fw) and fy <= cy <= (fy + int(fh * 0.7)):
                                 if area < 3000:
                                     is_eye_glasses = True
                                     break
-                    if is_eye_glasses:
-                        continue
+                        if is_eye_glasses:
+                            continue
 
-                    # Valid phone candidate verified!
-                    return True
+                    # -------------------------------------------------------------
+                    # Hand-Phone Proximity Verification (Crucial Anti-False-Positive)
+                    # -------------------------------------------------------------
+                    # Create contour mask and dilate by 21px to sample the hand grip / finger contact region
+                    mask_cnt = np.zeros((h, w), dtype=np.uint8)
+                    cv2.drawContours(mask_cnt, [cnt], -1, 255, -1)
+                    dilated = cv2.dilate(mask_cnt, np.ones((21, 21), np.uint8), iterations=1)
+                    border = cv2.bitwise_xor(dilated, mask_cnt)
+
+                    skin_in_border = cv2.countNonZero(cv2.bitwise_and(skin_mask, skin_mask, mask=border))
+                    skin_inside = cv2.countNonZero(cv2.bitwise_and(skin_mask, skin_mask, mask=mask_cnt))
+
+                    # Handheld rule: Must be in physical contact with or overlapping human skin (fingers/hand grip)
+                    # Background rectangles (monitors, blank walls, desk edges) have 0 skin contact!
+                    if (skin_in_border + skin_inside) >= 35:
+                        return True
 
             return False
         except Exception:
@@ -882,9 +946,35 @@ class ProctorEngine:
         - FULLSCREEN_EXITED
         - VOICE_DETECTED
         - MOBILE_PHONE_DETECTED
+
+        Applies strict debouncing and session limits so strikes reliably count up to 5:
+        - Tab switch / Fullscreen exit: 4.0s debounce lock
+        - Voice: max 1 warning total for the session with 20s cooldown
+        - Total strikes strictly capped at 5
         """
         timestamp = time.time()
         time_display = time.strftime("%H:%M:%S", time.localtime(timestamp))
+
+        # 1. Debounce and cooldown locks
+        if violation_type in ("TAB_SWITCH_DETECTED", "FULLSCREEN_EXITED"):
+            # Prevent simultaneous blur + visibilitychange + fullscreenchange double-firing
+            if (timestamp - self.last_tab_penalty_time) < 4.0:
+                return {
+                    "status": "DEBOUNCED",
+                    "trust_score": self.trust_score,
+                    "warnings_count": self.warnings_count
+                }
+            self.last_tab_penalty_time = timestamp
+
+        elif violation_type == "VOICE_DETECTED":
+            # Strict rule: severe noise is 1 warning total for session with 20s cooldown
+            if self.warnings_count["voice"] >= 1 or (timestamp - self.last_voice_penalty_time) < 20.0:
+                return {
+                    "status": "LOCKED",
+                    "trust_score": self.trust_score,
+                    "warnings_count": self.warnings_count
+                }
+            self.last_voice_penalty_time = timestamp
 
         severity_map = {
             "TAB_SWITCH_DETECTED": ("CRITICAL", 10.0, "tab_switch"),
@@ -898,9 +988,12 @@ class ProctorEngine:
         )
 
         self.trust_score = max(0.0, self.trust_score - penalty)
-        self.warnings_count["total"] += 1
-        if warning_key in self.warnings_count:
-            self.warnings_count[warning_key] += 1
+
+        # Track warning count, strictly capped at 5
+        if self.warnings_count["total"] < 5:
+            self.warnings_count["total"] = min(5, self.warnings_count["total"] + 1)
+            if warning_key in self.warnings_count:
+                self.warnings_count[warning_key] += 1
 
         evidence = {
             "snapshot_base64": snapshot_base64,
@@ -954,7 +1047,10 @@ class ProctorEngine:
             "fullscreen_exit": 0,
             "looking_away": 0,
             "multiple_faces": 0,
-            "no_face": 0
+            "no_face": 0,
+            "window_backlight": 0,
+            "head_nodding": 0,
+            "partial_face": 0
         }
         self.looking_away_start_time = None
         self.last_looking_away_penalty_time = 0.0
@@ -962,5 +1058,12 @@ class ProctorEngine:
         self.last_no_face_penalty_time = 0.0
         self.last_multi_face_penalty_time = 0.0
         self.last_mobile_penalty_time = 0.0
+        self.last_tab_penalty_time = 0.0
+        self.last_voice_penalty_time = 0.0
+        self.last_lighting_penalty_time = 0.0
+        self.last_boundary_penalty_time = 0.0
+        self.last_nodding_penalty_time = 0.0
         self.phone_consecutive_frames = 0
+        self.multi_face_consecutive_frames = 0
+        self.pitch_history.clear()
         self.last_clean_timestamp = time.time()

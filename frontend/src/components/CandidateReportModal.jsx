@@ -742,15 +742,15 @@ export default function CandidateReportModal({ report, onClose }) {
         {/* ============================================================= */}
         {(activeSection === 'all' || activeSection === 'integrity') && (
           <div className={`p-5 rounded-3xl mb-7 border font-mono ${
-            (integrity.total_warnings || 0) >= 5
+            Math.min(5, integrity.total_warnings || 0) >= 5
               ? 'bg-neon-rose/20 border-neon-rose text-rose-100 shadow-neon-rose'
-              : (integrity.total_warnings || 0) >= 3
+              : Math.min(5, integrity.total_warnings || 0) >= 3
               ? 'bg-neon-amber/20 border-neon-amber text-amber-100 shadow-neon-amber'
               : 'bg-white/[0.03] border-white/15 text-slate-200'
           }`}>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
               <div className="flex items-center gap-2">
-                <Shield className={`w-5 h-5 ${(integrity.total_warnings || 0) >= 5 ? 'text-neon-rose' : 'text-neon-cyan'}`} />
+                <Shield className={`w-5 h-5 ${Math.min(5, integrity.total_warnings || 0) >= 5 ? 'text-neon-rose' : 'text-neon-cyan'}`} />
                 <div>
                   <div className="font-bold text-xs uppercase tracking-wider">
                     Proctor Integrity Trust Index: <span className="font-black text-white">{trustScore}%</span>
@@ -763,11 +763,11 @@ export default function CandidateReportModal({ report, onClose }) {
 
               <div className="text-right">
                 <span className={`px-3 py-1 rounded-full text-xs font-black border ${
-                  (integrity.total_warnings || 0) >= 5
+                  Math.min(5, integrity.total_warnings || 0) >= 5
                     ? 'bg-neon-rose text-white border-neon-rose'
                     : 'bg-neon-amber/20 text-neon-gold border-neon-amber/40'
                 }`}>
-                  {integrity.total_warnings || 0} of 5 Strikes Logged
+                  {Math.min(5, integrity.total_warnings || 0)} of 5 Strikes Logged
                 </span>
               </div>
             </div>

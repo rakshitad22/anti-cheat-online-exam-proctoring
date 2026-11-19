@@ -40,6 +40,7 @@ export default function LockdownGuardian({
   const lastVoiceViolationTime = useRef(0);
   const consecutiveLoudFrames = useRef(0);
   const baselineNoiseRef = useRef(70);
+  const lastTabViolationTimeRef = useRef(0);
 
   // 1. Enter Fullscreen Mode
   const enterFullscreen = useCallback(async () => {
@@ -57,7 +58,7 @@ export default function LockdownGuardian({
     }
   }, []);
 
-  // 2. Fullscreen Listener
+  // 2. Fullscreen Listener with 4s Debounce Lock
   useEffect(() => {
     if (!isActive) return;
 
@@ -68,10 +69,14 @@ export default function LockdownGuardian({
       setIsFullscreen(isCurrentlyFull);
 
       if (!isCurrentlyFull && isActive) {
-        triggerSecurityViolation(
-          'FULLSCREEN_EXITED',
-          'Candidate exited fullscreen mode! Fullscreen lockdown is strictly mandatory.'
-        );
+        const now = Date.now();
+        if (now - lastTabViolationTimeRef.current > 4000) {
+          lastTabViolationTimeRef.current = now;
+          triggerSecurityViolation(
+            'FULLSCREEN_EXITED',
+            'Candidate exited fullscreen mode! Fullscreen lockdown is strictly mandatory.'
+          );
+        }
       }
     };
 
@@ -85,24 +90,32 @@ export default function LockdownGuardian({
     };
   }, [isActive, enterFullscreen]);
 
-  // 3. Tab Switch & Window Blur Detection
+  // 3. Tab Switch & Window Blur Detection with 4s Debounce Lock
   useEffect(() => {
     if (!isActive) return;
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        triggerSecurityViolation(
-          'TAB_SWITCH_DETECTED',
-          'Tab switch or minimized window detected! Switching tabs is strictly prohibited.'
-        );
+        const now = Date.now();
+        if (now - lastTabViolationTimeRef.current > 4000) {
+          lastTabViolationTimeRef.current = now;
+          triggerSecurityViolation(
+            'TAB_SWITCH_DETECTED',
+            'Tab switch or minimized window detected! Switching tabs is strictly prohibited.'
+          );
+        }
       }
     };
 
     const handleWindowBlur = () => {
-      triggerSecurityViolation(
-        'TAB_SWITCH_DETECTED',
-        'Window lost focus (Alt+Tab, window blur, or multi-screen interaction).'
-      );
+      const now = Date.now();
+      if (now - lastTabViolationTimeRef.current > 4000) {
+        lastTabViolationTimeRef.current = now;
+        triggerSecurityViolation(
+          'TAB_SWITCH_DETECTED',
+          'Window lost focus (Alt+Tab, window blur, or multi-screen interaction).'
+        );
+      }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -262,14 +275,18 @@ export default function LockdownGuardian({
     };
   }, [isActive, allowVoice]);
 
-  // 6. Security Violation Trigger
+  // 6. Security Violation Trigger (Clamped strictly to 5 strikes)
   const triggerSecurityViolation = async (violationType, message) => {
     try {
-      await axios.post(`${API_BASE_URL}/api/proctor/log-warning`, {
+      const res = await axios.post(`${API_BASE_URL}/api/proctor/log-warning`, {
         type: violationType,
         message: message,
         timestamp: Date.now() / 1000
       });
+      // If server returned DEBOUNCED or LOCKED, do not show duplicate modal
+      if (res.data?.status === 'DEBOUNCED' || res.data?.status === 'LOCKED') {
+        return;
+      }
     } catch (err) {
       console.warn('Failed to log violation remotely:', err);
     }
@@ -281,13 +298,14 @@ export default function LockdownGuardian({
       onViolationTriggered(violationType, message);
     }
 
-    const currentStrikes = (warningsCount?.total || 0) + 1;
+    const currentStrikes = Math.min(maxAllowedWarnings, (warningsCount?.total || 0) + 1);
     if (currentStrikes >= maxAllowedWarnings && onForceSubmit) {
       onForceSubmit();
     }
   };
 
-  const totalWarnings = warningsCount?.total || 0;
+  // Clamped at 5 total warnings
+  const totalWarnings = Math.min(maxAllowedWarnings, warningsCount?.total || 0);
 
   return (
     <>

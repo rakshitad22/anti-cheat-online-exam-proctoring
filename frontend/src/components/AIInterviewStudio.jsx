@@ -51,8 +51,12 @@ export default function AIInterviewStudio({
   const [evaluation, setEvaluation] = useState(null);
   const [history, setHistory] = useState([]);
   const [turn, setTurn] = useState(1);
+  const [voiceStatusText, setVoiceStatusText] = useState('');
 
+  // Deduplication & Turn Locks for Zam AI Speech Pipeline
   const recognitionRef = useRef(null);
+  const finalTranscriptRef = useRef('');
+  const isSubmittingTurnRef = useRef(false);
 
   // 1. Text-to-Speech (TTS)
   const speakText = useCallback((text) => {
@@ -80,8 +84,14 @@ export default function AIInterviewStudio({
   // 2. Fetch or Progress to Next Question
   const fetchNextQuestion = async (nextTurn = turn + 1) => {
     stopSpeaking();
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (_) {}
+    }
+    setIsListeningVoice(false);
+    finalTranscriptRef.current = '';
     setCandidateAnswer('');
     setEvaluation(null);
+    setVoiceStatusText('');
 
     // If test has interview topics predefined, use them for consistent curriculum alignment
     if (interviewTopics && interviewTopics.length >= nextTurn) {
@@ -136,11 +146,14 @@ export default function AIInterviewStudio({
     };
   }, []);
 
-  // 3. Speech-to-Text (STT)
+  // 3. Speech-to-Text (STT) - Deduplicated Single Utterance Capture
   const toggleVoiceRecording = () => {
     if (isListeningVoice) {
-      if (recognitionRef.current) recognitionRef.current.stop();
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (_) {}
+      }
       setIsListeningVoice(false);
+      setVoiceStatusText(candidateAnswer.trim() ? '✓ Spoken Defense Captured' : '');
       return;
     }
 
@@ -153,21 +166,61 @@ export default function AIInterviewStudio({
     }
 
     try {
+      // Clean up any stale recognition instance before starting anew
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (_) {}
+      }
+
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
 
-      recognition.onstart = () => setIsListeningVoice(true);
-      recognition.onend = () => setIsListeningVoice(false);
-      recognition.onerror = () => setIsListeningVoice(false);
+      // Seed final transcript with current textarea content if candidate typed something first
+      finalTranscriptRef.current = candidateAnswer.trim();
 
+      recognition.onstart = () => {
+        setIsListeningVoice(true);
+        setVoiceStatusText('🎙️ Mic Active • Listening (Deduplicated single capture)...');
+      };
+
+      recognition.onend = () => {
+        setIsListeningVoice(false);
+        setVoiceStatusText(finalTranscriptRef.current ? '✓ Spoken Defense Captured' : '');
+      };
+
+      recognition.onerror = (event) => {
+        console.warn('Zam AI STT event error:', event.error);
+        setIsListeningVoice(false);
+        setVoiceStatusText('');
+      };
+
+      // Exact single capture handler: separate confirmed final words from transient interim words
       recognition.onresult = (event) => {
-        let transcript = '';
+        let interimText = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
+          const res = event.results[i];
+          const spoken = res[0]?.transcript || '';
+          if (res.isFinal) {
+            const clean = spoken.trim();
+            if (clean) {
+              finalTranscriptRef.current = finalTranscriptRef.current
+                ? `${finalTranscriptRef.current} ${clean}`
+                : clean;
+            }
+          } else {
+            interimText += spoken;
+          }
         }
-        setCandidateAnswer((prev) => (prev ? prev + ' ' + transcript : transcript));
+
+        const finalPart = finalTranscriptRef.current;
+        const transientPart = interimText.trim();
+        const combined = finalPart
+          ? (transientPart ? `${finalPart} ${transientPart}` : finalPart)
+          : transientPart;
+
+        setCandidateAnswer(combined);
+        setVoiceStatusText('🎙️ Transcribing Voice Defense...');
       };
 
       recognition.start();
@@ -175,20 +228,32 @@ export default function AIInterviewStudio({
     } catch (err) {
       console.error('STT activation failed:', err);
       setIsListeningVoice(false);
+      setVoiceStatusText('');
     }
   };
 
-  // 4. Submit Answer for Agent Evaluation
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (_) {}
+      }
+    };
+  }, []);
+
+  // 4. Submit Answer for Agent Evaluation (Debounced & Turn-Locked)
   const submitAnswer = async () => {
-    if (!candidateAnswer.trim() || isEvaluating) return;
+    if (!candidateAnswer.trim() || isEvaluating || isSubmittingTurnRef.current) return;
+    isSubmittingTurnRef.current = true;
 
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      try { recognitionRef.current.stop(); } catch (_) {}
       setIsListeningVoice(false);
     }
     stopSpeaking();
 
     setIsEvaluating(true);
+    setVoiceStatusText('⏳ Zam AI Evaluating Technical Depth...');
     try {
       const res = await axios.post(`${API_BASE_URL}/api/interview/evaluate`, {
         question: currentQuestion,
@@ -197,6 +262,7 @@ export default function AIInterviewStudio({
       });
       const evalData = res.data;
       setEvaluation(evalData);
+      setVoiceStatusText('✓ Evaluation Complete');
 
       const turnRecord = {
         turn: turn,
@@ -227,6 +293,7 @@ export default function AIInterviewStudio({
         ]
       };
       setEvaluation(fallbackEval);
+      setVoiceStatusText('✓ Evaluation Complete');
 
       const turnRecord = {
         turn: turn,
@@ -238,6 +305,7 @@ export default function AIInterviewStudio({
       if (onAnswerLogged) onAnswerLogged(turnRecord);
     } finally {
       setIsEvaluating(false);
+      isSubmittingTurnRef.current = false;
     }
   };
 
@@ -554,9 +622,22 @@ export default function AIInterviewStudio({
           />
 
           <div className="flex items-center justify-between pt-1">
-            <span className="text-[11px] font-mono text-neon-mint font-bold">
-              Word Count: {candidateAnswer.trim() ? candidateAnswer.trim().split(/\s+/).length : 0}
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-mono text-neon-mint font-bold">
+                Word Count: {candidateAnswer.trim() ? candidateAnswer.trim().split(/\s+/).length : 0}
+              </span>
+              {voiceStatusText && (
+                <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border transition-all ${
+                  isListeningVoice
+                    ? 'bg-neon-rose/20 text-neon-rose border-neon-rose animate-pulse'
+                    : isEvaluating
+                    ? 'bg-neon-cyan/20 text-neon-cyan border-neon-cyan animate-pulse'
+                    : 'bg-neon-emerald/20 text-neon-mint border-neon-emerald'
+                }`}>
+                  {voiceStatusText}
+                </span>
+              )}
+            </div>
 
             <button
               onClick={submitAnswer}

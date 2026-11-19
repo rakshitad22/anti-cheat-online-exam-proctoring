@@ -356,12 +356,7 @@ def get_session_status():
 
 @app.post("/api/session/reset")
 def reset_session():
-    engine.trust_score = 100.0
-    engine.incidents = []
-    engine.warnings_count = {
-        "total": 0, "voice": 0, "mobile_phone": 0, "tab_switch": 0,
-        "fullscreen_exit": 0, "looking_away": 0, "multiple_faces": 0, "no_face": 0
-    }
+    engine.reset_session()
     return {
         "message": "Session reset successfully",
         "trust_score": engine.trust_score,
@@ -540,13 +535,13 @@ def evaluate_interview_response(payload: InterviewEvaluationRequest):
 def submit_exam(submission: ExamSubmissionRequest):
     session_id = f"rpt-{uuid.uuid4().hex[:10]}"
 
-    # Calculate overall integrity and performance scores
+    # Calculate overall integrity and performance scores (Clamped strictly to 5 maximum)
     raw_trust = submission.trust_score
     raw_warnings = submission.warnings_count or {}
     if "total" in raw_warnings and isinstance(raw_warnings["total"], (int, float)):
-        total_warnings = int(raw_warnings["total"])
+        total_warnings = min(5, int(raw_warnings["total"]))
     else:
-        total_warnings = sum(v for k, v in raw_warnings.items() if isinstance(v, (int, float)))
+        total_warnings = min(5, sum(v for k, v in raw_warnings.items() if isinstance(v, (int, float))))
 
 
     # Compute improvement recommendations based on infractions
