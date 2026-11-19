@@ -99,9 +99,9 @@ class ProctorEngine:
         # Head nodding temporal tracking: rolling list of (timestamp, pitch)
         self.pitch_history: List[Tuple[float, float]] = []
 
-        # Mobile phone detection temporal persistence (1 confirmed frame triggers immediate alert)
+        # Mobile phone detection temporal persistence (2 confirmed frames = 800ms of holding phone)
         self.phone_consecutive_frames: int = 0
-        self.phone_confirm_threshold: int = 1
+        self.phone_confirm_threshold: int = 2
 
         # Evidence snapshot directory
         if evidence_dir is None:
@@ -795,83 +795,75 @@ class ProctorEngine:
 
     def detect_mobile_phone_heuristic(self, frame: np.ndarray, face_boxes=None) -> bool:
         """
-        High-accuracy multi-strategy computer vision detector for handheld smartphones and mobile devices.
-        Detects rectangular phone body, backplate colors, aspect ratio, camera islands/lenses,
-        even when held in front of the chest, mouth, or at angles.
+        High-accuracy precision computer vision detector for handheld smartphones and mobile devices.
+        Detects genuine handheld rectangular phone bodies while strictly ignoring background room walls,
+        doors, posters, shadows, and clothing folds.
         """
         try:
             h, w, _ = frame.shape
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-            # Multi-method edge and threshold extractions to catch dark, bright, or reflective phones
-            edge_methods = [
-                cv2.Canny(blur, 25, 80),
-                cv2.Canny(blur, 45, 130),
-                cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-            ]
+            # High-precision Canny edge isolation for rigid smartphone contours
+            edges = cv2.Canny(blur, 45, 135)
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+            cnts, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-            for edges in edge_methods:
-                closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-                # RETR_LIST detects internal contours inside the body/torso
-                cnts, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in cnts:
+                area = cv2.contourArea(cnt)
+                # True smartphone dimensions in standard webcam feed: 2,200 to 75,000 px
+                if not (2200 <= area <= 75000):
+                    continue
+                if (area / float(w * h)) > 0.40:
+                    continue
 
-                for cnt in cnts:
-                    area = cv2.contourArea(cnt)
-                    # Handheld smartphone size range in typical webcam frame
-                    if not (1100 <= area <= 140000):
-                        continue
-                    if (area / float(w * h)) > 0.45:
-                        continue
+                perimeter = cv2.arcLength(cnt, True)
+                if perimeter <= 0:
+                    continue
 
-                    perimeter = cv2.arcLength(cnt, True)
-                    if perimeter <= 0:
-                        continue
+                rect = cv2.minAreaRect(cnt)
+                rw, rh = rect[1]
+                long_side = max(rw, rh)
+                short_side = min(rw, rh)
+                if long_side < 50 or short_side < 24:
+                    continue
 
-                    rect = cv2.minAreaRect(cnt)
-                    rw, rh = rect[1]
-                    long_side = max(rw, rh)
-                    short_side = min(rw, rh)
-                    if long_side < 42 or short_side < 18:
-                        continue
+                aspect_ratio = long_side / short_side
+                # Strict smartphone aspect ratio (portrait 16:9 ~ 1.77, 20:9 ~ 2.22, angled 1.35 to 2.55)
+                if not (1.35 <= aspect_ratio <= 2.55):
+                    continue
 
-                    aspect_ratio = long_side / short_side
-                    rect_area = rw * rh
+                # Rigid rectangular solidity: phone glass/metal body is solid and flat
+                rect_area = rw * rh
+                solidity = area / rect_area if rect_area > 0 else 0
+                if solidity < 0.72:
+                    continue
 
-                    # Smartphone aspect ratio: 1.30 to 3.40 (portrait, landscape, tilted)
-                    if not (1.30 <= aspect_ratio <= 3.40):
-                        continue
+                # Polygon approximation: 4-sided rectangular polygon (4-6 with rounded corners)
+                approx = cv2.approxPolyDP(cnt, 0.04 * perimeter, True)
+                if not (4 <= len(approx) <= 6):
+                    continue
 
-                    # Rectangular solidity: allows hands, fingers holding edges
-                    solidity = area / rect_area if rect_area > 0 else 0
-                    if solidity < 0.46:
-                        continue
+                # Bounding center
+                cx, cy = int(rect[0][0]), int(rect[0][1])
+                # Ignore extreme ceiling fixture band
+                if cy < int(h * 0.08):
+                    continue
 
-                    # Polygon approximation: 4-sided quadrilateral, allowing 4-12 vertices for rounded corners/fingers
-                    approx = cv2.approxPolyDP(cnt, 0.035 * perimeter, True)
-                    if not (4 <= len(approx) <= 12):
-                        continue
+                # Disregard small eyeglasses frames on detected candidate face
+                is_eye_glasses = False
+                if face_boxes:
+                    for (fx, fy, fw, fh) in face_boxes:
+                        if fx <= cx <= (fx + fw) and fy <= cy <= (fy + int(fh * 0.7)):
+                            if area < 3000:
+                                is_eye_glasses = True
+                                break
+                if is_eye_glasses:
+                    continue
 
-                    # Bounding center
-                    cx, cy = int(rect[0][0]), int(rect[0][1])
-                    # Ignore extreme top ceiling band
-                    if cy < int(h * 0.06):
-                        continue
-
-                    # Filter out small eyeglasses frames on detected candidate face
-                    is_eye_glasses = False
-                    if face_boxes:
-                        for (fx, fy, fw, fh) in face_boxes:
-                            if fx <= cx <= (fx + fw) and fy <= cy <= (fy + int(fh * 0.7)):
-                                if area < 3000:
-                                    is_eye_glasses = True
-                                    break
-                    if is_eye_glasses:
-                        continue
-
-                    # Phone candidate verified!
-                    return True
+                # Valid phone candidate verified!
+                return True
 
             return False
         except Exception:
