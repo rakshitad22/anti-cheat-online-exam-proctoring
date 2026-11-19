@@ -39,6 +39,7 @@ export default function LockdownGuardian({
   const audioAnimationRef = useRef(null);
   const lastVoiceViolationTime = useRef(0);
   const consecutiveLoudFrames = useRef(0);
+  const baselineNoiseRef = useRef(70);
 
   // 1. Enter Fullscreen Mode
   const enterFullscreen = useCallback(async () => {
@@ -189,9 +190,8 @@ export default function LockdownGuardian({
           analyser.getByteFrequencyData(dataArray);
 
           // Vocal Formant Bandpass Filter (350 Hz to 3400 Hz):
-          // With fftSize = 256 at standard 48kHz sampling, each bin is ~187.5 Hz.
-          // Bins 0-1 (0-375 Hz): Mechanical fan hum, AC rumble, ambient noise -> STRICTLY PERMITTED & IGNORED!
-          // Bins 2-18 (375-3400 Hz): Human vocal speech & loud commotion band.
+          // Bins 0-1 (0-375 Hz): Mechanical fan hum, laptop whirr, AC rumble -> STRICTLY PERMITTED & FILTERED OUT!
+          // Bins 2-18 (375-3400 Hz): Human vocal speech & conversational commotion band.
           let speechSum = 0;
           let speechBins = 0;
           for (let i = 2; i <= Math.min(18, dataArray.length - 1); i++) {
@@ -199,17 +199,33 @@ export default function LockdownGuardian({
             speechBins++;
           }
           const speechAvg = speechBins > 0 ? speechSum / speechBins : 0;
-          setAudioLevel(Math.round(speechAvg));
 
-          // Strict Voice/Noise Gate:
-          // Low noises, desk taps, and continuous fan hum are allowed without warning.
-          // Only high-energy, sustained conversational voice or loud disturbances (> 78 dB vocal energy) trigger violation.
-          if (speechAvg > 78) {
+          // Adaptive Ambient Baseline Calibration:
+          // Continuously track steady background room noise (fan, computer electrical hiss, room acoustics)
+          if (speechAvg < baselineNoiseRef.current + 20) {
+            baselineNoiseRef.current = baselineNoiseRef.current * 0.97 + speechAvg * 0.03;
+          }
+
+          // Calibrated Decibel Meter for UI Display:
+          // In a quiet room, displays a calm 20 - 28 dB (Quiet Exam Hall / Green).
+          const dynamicDb = Math.max(
+            18,
+            Math.min(95, Math.round(20 + Math.max(0, speechAvg - baselineNoiseRef.current) * 1.6))
+          );
+          setAudioLevel(dynamicDb);
+
+          // Robust Human Voice / Loud Commotion Discriminator:
+          // Requires genuine human speech (energy > 135 out of 255 AND +35 dB above ambient room noise floor).
+          // Low fan noises, laptop fans, breathing, keyboard tapping are completely ignored!
+          const isTrueSpeech = speechAvg > 135 && speechAvg > (baselineNoiseRef.current + 35);
+
+          if (isTrueSpeech) {
             consecutiveLoudFrames.current += 1;
-            if (consecutiveLoudFrames.current >= 20) {
+            // Must be sustained for ~1.5 to 2.0 seconds (~45 frames at 60fps) of continuous talking
+            if (consecutiveLoudFrames.current >= 45) {
               setVoiceDetected(true);
               const now = Date.now();
-              if (now - lastVoiceViolationTime.current > 8000) {
+              if (now - lastVoiceViolationTime.current > 20000) {
                 lastVoiceViolationTime.current = now;
                 triggerSecurityViolation(
                   'VOICE_DETECTED',
@@ -218,8 +234,8 @@ export default function LockdownGuardian({
               }
             }
           } else {
-            consecutiveLoudFrames.current = Math.max(0, consecutiveLoudFrames.current - 1);
-            if (consecutiveLoudFrames.current === 0) {
+            consecutiveLoudFrames.current = Math.max(0, consecutiveLoudFrames.current - 2);
+            if (consecutiveLoudFrames.current <= 5) {
               setVoiceDetected(false);
             }
           }

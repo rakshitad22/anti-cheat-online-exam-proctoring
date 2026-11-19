@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Download,
   Printer,
@@ -30,6 +30,14 @@ export default function CandidateReportModal({ report, onClose }) {
 
   const [activeSection, setActiveSection] = useState('all'); // 'all' | 'mcq' | 'coding' | 'viva' | 'integrity'
   const [downloadSuccess, setDownloadSuccess] = useState(false);
+  const modalScrollRef = useRef(null);
+
+  useEffect(() => {
+    // Scroll modal view to top immediately on appearance
+    if (modalScrollRef.current) {
+      modalScrollRef.current.scrollTop = 0;
+    }
+  }, []);
 
   const handlePrint = () => {
     window.print();
@@ -244,11 +252,14 @@ export default function CandidateReportModal({ report, onClose }) {
   const viva = report.interview_analysis || {};
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-void/85 backdrop-blur-3xl overflow-y-auto animate-in fade-in duration-200">
-      <div className="relative w-full max-w-4xl rounded-[2.5rem] liquid-glass border border-white/20 shadow-glass-specular p-6 sm:p-9 my-8 text-slate-100 print:bg-white print:text-black print:border-none print:shadow-none print:p-0">
+    <div
+      ref={modalScrollRef}
+      className="fixed inset-0 z-[100] flex justify-center items-start p-3 sm:p-6 sm:py-8 bg-void/90 backdrop-blur-3xl overflow-y-auto animate-in fade-in duration-200"
+    >
+      <div className="relative w-full max-w-5xl rounded-[2.5rem] liquid-glass border border-white/25 shadow-glass-specular p-5 sm:p-9 my-4 text-slate-100 print:bg-white print:text-black print:border-none print:shadow-none print:p-0">
         
-        {/* Top Controls Bar (Hidden in Print) */}
-        <div className="flex flex-wrap items-center justify-between pb-5 border-b border-white/[0.12] gap-3 print:hidden">
+        {/* Sticky Top Controls Bar (Hidden in Print) */}
+        <div className="sticky top-0 z-30 bg-slate-950/85 backdrop-blur-2xl -mx-3 px-3 sm:-mx-7 sm:px-7 py-3.5 mb-5 rounded-2xl border border-white/10 shadow-glass-specular flex flex-wrap items-center justify-between gap-3 print:hidden">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-2xl bg-neon-emerald/15 text-neon-mint border border-neon-emerald/30 shadow-neon-emerald">
               <Award className="w-6 h-6" />
@@ -791,6 +802,41 @@ export default function CandidateReportModal({ report, onClose }) {
             </div>
           </div>
         )}
+
+        {/* Bottom Actions Bar for Easy Access without scrolling back up */}
+        <div className="my-6 p-4 rounded-2xl liquid-glass-subtle border border-white/10 flex flex-wrap items-center justify-between gap-3 print:hidden">
+          <div className="text-xs font-mono text-slate-300">
+            Official Academic Record for <strong className="text-white">{report.candidate?.name || 'Candidate'}</strong>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={handleDownloadHTML}
+              className="px-4 py-2 rounded-xl liquid-pill text-neon-mint border border-neon-mint/40 hover:bg-neon-mint/15 text-xs font-bold font-mono transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download Report (HTML)</span>
+            </button>
+            <button
+              onClick={handlePrint}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-neon-fuchsia to-neon-violet hover:opacity-90 active:scale-95 text-white text-xs font-bold transition flex items-center gap-2 shadow-neon-fuchsia font-mono cursor-pointer"
+            >
+              <Printer className="w-4 h-4" />
+              <span>Print / Save PDF</span>
+            </button>
+            <button
+              onClick={() => {
+                if (modalScrollRef.current) {
+                  modalScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }}
+              className="px-3.5 py-2 rounded-xl bg-white/[0.08] hover:bg-white/[0.15] text-slate-200 text-xs font-mono font-bold transition flex items-center gap-1.5 cursor-pointer"
+              title="Scroll back to top"
+            >
+              <ChevronUp className="w-3.5 h-3.5" />
+              <span>Scroll to Top</span>
+            </button>
+          </div>
+        </div>
 
         {/* Official Verification Seal & Authenticity Footer */}
         <div className="pt-6 border-t border-white/[0.12] flex flex-col sm:flex-row items-center justify-between gap-4 text-xs font-mono text-slate-400">

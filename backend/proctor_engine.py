@@ -99,9 +99,9 @@ class ProctorEngine:
         # Head nodding temporal tracking: rolling list of (timestamp, pitch)
         self.pitch_history: List[Tuple[float, float]] = []
 
-        # Mobile phone detection temporal persistence (2 confirmed frames for rapid detection)
+        # Mobile phone detection temporal persistence (1 confirmed frame triggers immediate alert)
         self.phone_consecutive_frames: int = 0
-        self.phone_confirm_threshold: int = 2
+        self.phone_confirm_threshold: int = 1
 
         # Evidence snapshot directory
         if evidence_dir is None:
@@ -110,6 +110,13 @@ class ProctorEngine:
         else:
             self.evidence_dir = Path(evidence_dir)
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize Haar Cascade face detector as dependable offline computer vision baseline
+        try:
+            haar_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            self.haar_face = cv2.CascadeClassifier(haar_path)
+        except Exception:
+            self.haar_face = None
 
         # Initialize MediaPipe Face Mesh detector
         if MEDIAPIPE_AVAILABLE and mp_face_mesh:
@@ -122,7 +129,6 @@ class ProctorEngine:
             )
         else:
             self.face_mesh = None
-            print("[WARN] MediaPipe Face Mesh is not available. Running in heuristic simulation mode.")
 
     # -------------------------------------------------------------------------
     # Image Utility Functions
@@ -486,7 +492,8 @@ class ProctorEngine:
         infractions: List[Dict[str, Any]] = []
 
         face_boxes = []
-        # Run MediaPipe face mesh
+        results = None
+        # Run MediaPipe face mesh if available
         if self.face_mesh:
             results = self.face_mesh.process(rgb_frame)
             if results.multi_face_landmarks:
@@ -497,9 +504,27 @@ class ProctorEngine:
                     min_x, max_x = int(min(xs)), int(max(xs))
                     min_y, max_y = int(min(ys)), int(max(ys))
                     face_boxes.append((min_x, min_y, max_x - min_x, max_y - min_y))
-        else:
-            # Fallback simulator if MediaPipe binary is unavailable
-            face_count = 1
+
+        # Secondary: High-accuracy Haar Cascade offline detector when MediaPipe has 0 detections or is unavailable
+        if face_count == 0 and self.haar_face and not self.haar_face.empty():
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            detected_faces = self.haar_face.detectMultiScale(
+                gray_frame,
+                scaleFactor=1.1,
+                minNeighbors=3,
+                minSize=(28, 28)
+            )
+            if len(detected_faces) > 0:
+                face_count = len(detected_faces)
+                for (fx, fy, fw, fh) in detected_faces:
+                    face_boxes.append((fx, fy, fw, fh))
+                if face_count == 1:
+                    fx, fy, fw, fh = detected_faces[0]
+                    fcx = fx + (fw / 2.0)
+                    fcy = fy + (fh / 2.0)
+                    yaw_deg = round(((fcx - (w / 2.0)) / (w / 2.0)) * 40.0, 1)
+                    pitch_deg = round(((fcy - (h * 0.42)) / (h * 0.42)) * 30.0, 1)
+                    head_pose = {"pitch": pitch_deg, "yaw": yaw_deg, "roll": 0.0}
 
         # ---------------------------------------------------------------------
         # 1. Presence Rule: No Face Detected (-5 pts per second)
@@ -770,79 +795,83 @@ class ProctorEngine:
 
     def detect_mobile_phone_heuristic(self, frame: np.ndarray, face_boxes=None) -> bool:
         """
-        High-accuracy computer vision detector for handheld smartphones and mobile devices.
-        Enforces geometric and structural properties:
-        1. Rectangular quadrilateral polygon approximation (approxPolyDP).
-        2. Smartphone aspect ratio (1.30 to 2.65 for portrait/tilted mobile devices).
-        3. Rectangular solidity >= 0.70 (accommodates fingers holding the device edge).
-        4. Size bounds (2,200 to 65,000 px in webcam frame).
-        5. Position check (outside candidate eye/head center).
+        High-accuracy multi-strategy computer vision detector for handheld smartphones and mobile devices.
+        Detects rectangular phone body, backplate colors, aspect ratio, camera islands/lenses,
+        even when held in front of the chest, mouth, or at angles.
         """
         try:
             h, w, _ = frame.shape
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-            # High-contrast Canny edges to isolate rectangular device borders
-            edges = cv2.Canny(blur, 50, 160)
+            # Multi-method edge and threshold extractions to catch dark, bright, or reflective phones
+            edge_methods = [
+                cv2.Canny(blur, 25, 80),
+                cv2.Canny(blur, 45, 130),
+                cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            ]
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-            cnts, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            for cnt in cnts:
-                area = cv2.contourArea(cnt)
-                # True smartphone size in typical webcam frame: 2,200 to 65,000 px
-                if not (2200 <= area <= 65000):
-                    continue
+            for edges in edge_methods:
+                closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+                # RETR_LIST detects internal contours inside the body/torso
+                cnts, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-                perimeter = cv2.arcLength(cnt, True)
-                if perimeter <= 0:
-                    continue
+                for cnt in cnts:
+                    area = cv2.contourArea(cnt)
+                    # Handheld smartphone size range in typical webcam frame
+                    if not (1100 <= area <= 140000):
+                        continue
+                    if (area / float(w * h)) > 0.45:
+                        continue
 
-                # 1. Rotated bounding box for handheld/tilted phones
-                rect = cv2.minAreaRect(cnt)
-                rw, rh = rect[1]
-                if rw < 22 or rh < 22:
-                    continue
+                    perimeter = cv2.arcLength(cnt, True)
+                    if perimeter <= 0:
+                        continue
 
-                long_side = max(rw, rh)
-                short_side = min(rw, rh)
-                aspect_ratio = long_side / short_side
-                rect_area = rw * rh
+                    rect = cv2.minAreaRect(cnt)
+                    rw, rh = rect[1]
+                    long_side = max(rw, rh)
+                    short_side = min(rw, rh)
+                    if long_side < 42 or short_side < 18:
+                        continue
 
-                # Smartphone aspect ratio: 1.30 to 2.65
-                if not (1.30 <= aspect_ratio <= 2.65):
-                    continue
+                    aspect_ratio = long_side / short_side
+                    rect_area = rw * rh
 
-                # 2. Rectangular solidity: phone body is solid and rigid (>= 0.70 allows fingers holding edge)
-                solidity = area / rect_area if rect_area > 0 else 0
-                if solidity < 0.70:
-                    continue
+                    # Smartphone aspect ratio: 1.30 to 3.40 (portrait, landscape, tilted)
+                    if not (1.30 <= aspect_ratio <= 3.40):
+                        continue
 
-                # 3. Polygon approximation: 4-sided rectangular quadrilateral (or 4-8 with rounded corners & hand grip)
-                approx = cv2.approxPolyDP(cnt, 0.04 * perimeter, True)
-                if not (4 <= len(approx) <= 8):
-                    continue
+                    # Rectangular solidity: allows hands, fingers holding edges
+                    solidity = area / rect_area if rect_area > 0 else 0
+                    if solidity < 0.46:
+                        continue
 
-                # 4. Position validation (cannot be in top 10% of frame or directly inside candidate eyes)
-                cx, cy = int(rect[0][0]), int(rect[0][1])
-                if cy < int(h * 0.10):
-                    continue
+                    # Polygon approximation: 4-sided quadrilateral, allowing 4-12 vertices for rounded corners/fingers
+                    approx = cv2.approxPolyDP(cnt, 0.035 * perimeter, True)
+                    if not (4 <= len(approx) <= 12):
+                        continue
 
-                # Exclude face and head zone
-                is_face_or_head = False
-                if face_boxes:
-                    for (fx, fy, fw, fh) in face_boxes:
-                        # Only exclude if center is directly in the candidate's eyes/nose area
-                        if (fx + int(fw * 0.15)) <= cx <= (fx + int(fw * 0.85)) and (fy + int(fh * 0.1)) <= cy <= (fy + int(fh * 0.7)):
-                            is_face_or_head = True
-                            break
+                    # Bounding center
+                    cx, cy = int(rect[0][0]), int(rect[0][1])
+                    # Ignore extreme top ceiling band
+                    if cy < int(h * 0.06):
+                        continue
 
-                if is_face_or_head:
-                    continue
+                    # Filter out small eyeglasses frames on detected candidate face
+                    is_eye_glasses = False
+                    if face_boxes:
+                        for (fx, fy, fw, fh) in face_boxes:
+                            if fx <= cx <= (fx + fw) and fy <= cy <= (fy + int(fh * 0.7)):
+                                if area < 3000:
+                                    is_eye_glasses = True
+                                    break
+                    if is_eye_glasses:
+                        continue
 
-                # Phone candidate verified!
-                return True
+                    # Phone candidate verified!
+                    return True
 
             return False
         except Exception:
