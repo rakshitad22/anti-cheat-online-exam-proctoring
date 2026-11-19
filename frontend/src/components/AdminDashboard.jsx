@@ -428,13 +428,16 @@ export default function AdminDashboard({
                 <img src="/skit-logo.png" alt="SKIT Logo" className="w-full h-full object-contain rounded-xl" />
               </div>
               <div>
-                <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight flex items-center gap-2">
-                  SKIT Mission Control
-                  <span className="text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-neon-emerald/20 text-neon-mint border border-neon-emerald/40 uppercase shadow-neon-emerald">
-                    Sri Krishna Institute of Technology
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+                    SKIT Mission Control
+                  </h1>
+                  <span className="text-[10px] font-mono font-black px-3 py-1 rounded-full bg-neon-emerald/15 text-neon-mint border border-neon-emerald/30 uppercase tracking-wider shadow-neon-emerald flex items-center gap-1.5 whitespace-nowrap">
+                    <span className="w-1.5 h-1.5 rounded-full bg-neon-mint animate-pulse" />
+                    Administrative Console
                   </span>
-                </h1>
-                <p className="text-xs text-slate-300 font-medium">
+                </div>
+                <p className="text-xs text-slate-300 font-medium mt-1">
                   Autonomous Proctoring & Department Examination Authority • Bangalore
                 </p>
               </div>

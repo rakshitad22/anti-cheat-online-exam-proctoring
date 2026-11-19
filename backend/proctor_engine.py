@@ -99,9 +99,9 @@ class ProctorEngine:
         # Head nodding temporal tracking: rolling list of (timestamp, pitch)
         self.pitch_history: List[Tuple[float, float]] = []
 
-        # Mobile phone detection temporal persistence (2 confirmed frames = 800ms of holding phone)
+        # Mobile phone detection temporal persistence (triggers immediately upon phone detection)
         self.phone_consecutive_frames: int = 0
-        self.phone_confirm_threshold: int = 2
+        self.phone_confirm_threshold: int = 1
 
         # Evidence snapshot directory
         if evidence_dir is None:
@@ -804,66 +804,67 @@ class ProctorEngine:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-            # High-precision Canny edge isolation for rigid smartphone contours
-            edges = cv2.Canny(blur, 45, 135)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-            cnts, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            # Dual-threshold Canny edge isolation for varied webcam exposures and hand grips
+            for t_low, t_high in [(35, 110), (25, 80)]:
+                edges = cv2.Canny(blur, t_low, t_high)
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+                cnts, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-            for cnt in cnts:
-                area = cv2.contourArea(cnt)
-                # True smartphone dimensions in standard webcam feed: 2,200 to 75,000 px
-                if not (2200 <= area <= 75000):
-                    continue
-                if (area / float(w * h)) > 0.40:
-                    continue
+                for cnt in cnts:
+                    area = cv2.contourArea(cnt)
+                    # True smartphone dimensions in standard webcam feed: 2,000 to 80,000 px
+                    if not (2000 <= area <= 80000):
+                        continue
+                    if (area / float(w * h)) > 0.40:
+                        continue
 
-                perimeter = cv2.arcLength(cnt, True)
-                if perimeter <= 0:
-                    continue
+                    perimeter = cv2.arcLength(cnt, True)
+                    if perimeter <= 0:
+                        continue
 
-                rect = cv2.minAreaRect(cnt)
-                rw, rh = rect[1]
-                long_side = max(rw, rh)
-                short_side = min(rw, rh)
-                if long_side < 50 or short_side < 24:
-                    continue
+                    rect = cv2.minAreaRect(cnt)
+                    rw, rh = rect[1]
+                    long_side = max(rw, rh)
+                    short_side = min(rw, rh)
+                    if long_side < 45 or short_side < 20:
+                        continue
 
-                aspect_ratio = long_side / short_side
-                # Strict smartphone aspect ratio (portrait 16:9 ~ 1.77, 20:9 ~ 2.22, angled 1.35 to 2.55)
-                if not (1.35 <= aspect_ratio <= 2.55):
-                    continue
+                    aspect_ratio = long_side / short_side
+                    # Handheld smartphone aspect ratio (portrait 16:9 ~ 1.77, 20:9 ~ 2.22, angled/foreshortened 1.22 to 2.85)
+                    if not (1.22 <= aspect_ratio <= 2.85):
+                        continue
 
-                # Rigid rectangular solidity: phone glass/metal body is solid and flat
-                rect_area = rw * rh
-                solidity = area / rect_area if rect_area > 0 else 0
-                if solidity < 0.72:
-                    continue
+                    # Rectangular solidity: allows candidate fingers and hand holding the device edges
+                    rect_area = rw * rh
+                    solidity = area / rect_area if rect_area > 0 else 0
+                    if solidity < 0.58:
+                        continue
 
-                # Polygon approximation: 4-sided rectangular polygon (4-6 with rounded corners)
-                approx = cv2.approxPolyDP(cnt, 0.04 * perimeter, True)
-                if not (4 <= len(approx) <= 6):
-                    continue
+                    # Polygon approximation: 4-sided rectangular polygon (4-8 vertices with fingers/rounded corners)
+                    approx = cv2.approxPolyDP(cnt, 0.04 * perimeter, True)
+                    if not (4 <= len(approx) <= 8):
+                        continue
 
-                # Bounding center
-                cx, cy = int(rect[0][0]), int(rect[0][1])
-                # Ignore extreme ceiling fixture band
-                if cy < int(h * 0.08):
-                    continue
+                    # Bounding center
+                    cx, cy = int(rect[0][0]), int(rect[0][1])
+                    # Ignore extreme ceiling fixture band
+                    if cy < int(h * 0.08):
+                        continue
 
-                # Disregard small eyeglasses frames on detected candidate face
-                is_eye_glasses = False
-                if face_boxes:
-                    for (fx, fy, fw, fh) in face_boxes:
-                        if fx <= cx <= (fx + fw) and fy <= cy <= (fy + int(fh * 0.7)):
-                            if area < 3000:
-                                is_eye_glasses = True
-                                break
-                if is_eye_glasses:
-                    continue
+                    # Disregard small eyeglasses frames on detected candidate face
+                    is_eye_glasses = False
+                    if face_boxes:
+                        for (fx, fy, fw, fh) in face_boxes:
+                            if fx <= cx <= (fx + fw) and fy <= cy <= (fy + int(fh * 0.7)):
+                                if area < 3000:
+                                    is_eye_glasses = True
+                                    break
+                    if is_eye_glasses:
+                        continue
 
-                # Valid phone candidate verified!
-                return True
+                    # Valid phone candidate verified!
+                    return True
 
             return False
         except Exception:

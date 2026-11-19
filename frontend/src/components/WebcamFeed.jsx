@@ -78,7 +78,7 @@ export default function WebcamFeed({ onFrameCapture, isStreaming = true, capture
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      if (video.readyState >= 2 && video.videoWidth > 0) {
         canvas.width = video.videoWidth || 640;
         canvas.height = video.videoHeight || 480;
         const ctx = canvas.getContext('2d');
