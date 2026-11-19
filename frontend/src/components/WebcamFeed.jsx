@@ -4,29 +4,46 @@ import { Camera, CameraOff, AlertCircle, RefreshCw, Radio, Lock, Zap, ShieldChec
 export default function WebcamFeed({ onFrameCapture, isStreaming = true, captureIntervalMs = 400 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const streamRef = useRef(null);
   const [streamActive, setStreamActive] = useState(false);
   const [permissionError, setPermissionError] = useState(null);
 
   const startCamera = useCallback(async () => {
     try {
       setPermissionError(null);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
       if (videoRef.current && videoRef.current.srcObject) {
         const tracks = videoRef.current.srcObject.getTracks();
         tracks.forEach((track) => track.stop());
+        videoRef.current.srcObject = null;
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        },
-        audio: false
-      });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: 'user'
+          },
+          audio: false
+        });
+      } catch (constraintErr) {
+        console.warn('Webcam ideal constraints failed, falling back to video: true', constraintErr);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
+
+      streamRef.current = stream;
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.play().catch((e) => console.warn('Webcam play deferred:', e));
         setStreamActive(true);
       }
     } catch (err) {
@@ -39,9 +56,14 @@ export default function WebcamFeed({ onFrameCapture, isStreaming = true, capture
   useEffect(() => {
     startCamera();
     return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
       if (videoRef.current && videoRef.current.srcObject) {
         const tracks = videoRef.current.srcObject.getTracks();
         tracks.forEach((track) => track.stop());
+        videoRef.current.srcObject = null;
       }
     };
   }, [startCamera]);
@@ -94,10 +116,21 @@ export default function WebcamFeed({ onFrameCapture, isStreaming = true, capture
         ) : (
           <>
             <video
-              ref={videoRef}
+              ref={(el) => {
+                videoRef.current = el;
+                if (el && streamRef.current && el.srcObject !== streamRef.current) {
+                  el.srcObject = streamRef.current;
+                  el.play().catch(() => {});
+                }
+              }}
+              autoPlay
               playsInline
               muted
-              className={`w-full h-full object-cover ${streamActive ? 'block' : 'hidden'}`}
+              onLoadedMetadata={(e) => {
+                e.target.play().catch(() => {});
+                setStreamActive(true);
+              }}
+              className="w-full h-full object-cover -scale-x-100 block"
             />
 
             {/* Futuristic Liquid Optical HUD Crosshairs */}

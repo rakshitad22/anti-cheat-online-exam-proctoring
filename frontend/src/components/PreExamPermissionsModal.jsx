@@ -38,20 +38,34 @@ export default function PreExamPermissionsModal({
     try {
       setCameraStatus('checking');
       setErrorMessage('');
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        },
-        audio: false
-      });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: 'user'
+          },
+          audio: false
+        });
+      } catch (constraintErr) {
+        console.warn('Camera ideal constraints failed, falling back to video: true', constraintErr);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
+
       cameraStreamRef.current = stream;
+      setCameraStatus('granted');
+
+      // Bind immediately if element is already available
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(() => {});
+        videoRef.current.play().catch((playErr) => {
+          console.warn('Video auto-play deferred:', playErr);
+        });
       }
-      setCameraStatus('granted');
     } catch (err) {
       console.error('Camera permission denied:', err);
       setCameraStatus('denied');
@@ -144,6 +158,18 @@ export default function PreExamPermissionsModal({
       cleanupStreams();
     };
   }, [isOpen]);
+
+  // Ensure camera stream is assigned to video element as soon as status becomes granted
+  useEffect(() => {
+    if (cameraStatus === 'granted' && cameraStreamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== cameraStreamRef.current) {
+        videoRef.current.srcObject = cameraStreamRef.current;
+      }
+      videoRef.current.play().catch((err) => {
+        console.warn('Video auto-playback deferred:', err);
+      });
+    }
+  }, [cameraStatus]);
 
   const cleanupStreams = () => {
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
@@ -290,15 +316,24 @@ export default function PreExamPermissionsModal({
 
             {/* Live Video Preview Box */}
             {cameraStatus === 'granted' && (
-              <div className="mt-3 relative rounded-xl overflow-hidden aspect-video max-h-36 bg-slate-950 border border-white/10 flex items-center justify-center">
+              <div className="mt-3 relative rounded-xl overflow-hidden aspect-video max-h-48 bg-slate-950 border border-white/10 flex items-center justify-center">
                 <video
-                  ref={videoRef}
+                  ref={(el) => {
+                    videoRef.current = el;
+                    if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) {
+                      el.srcObject = cameraStreamRef.current;
+                      el.play().catch((e) => console.warn('Video play deferred:', e));
+                    }
+                  }}
                   playsInline
                   autoPlay
                   muted
-                  className="w-full h-full object-cover"
+                  onLoadedMetadata={(e) => {
+                    e.target.play().catch(() => {});
+                  }}
+                  className="w-full h-full object-cover -scale-x-100"
                 />
-                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-void/80 border border-white/15 text-[9px] font-mono text-neon-mint flex items-center gap-1.5">
+                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-void/80 border border-white/15 text-[9px] font-mono text-neon-mint flex items-center gap-1.5 shadow-md">
                   <span className="w-1.5 h-1.5 rounded-full bg-neon-mint animate-pulse" />
                   <span>Optical Stream Calibrated</span>
                 </div>

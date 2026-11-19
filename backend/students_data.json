@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "id": "std-a39a84",
+    "email": "rakshitad@skit.org.in",
+    "password": "rakshitad@123",
+    "name": "Rakshita D",
+    "department": "Information Technology (IT)",
+    "role": "student",
+    "created_at": 1795069633.240242
+  }
+]
